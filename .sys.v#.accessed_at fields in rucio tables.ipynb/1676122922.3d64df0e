@@ -1,0 +1,1322 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "id": "72ca90b1",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-11T13:39:08.259833Z",
+     "start_time": "2023-02-11T13:39:08.239160Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "import pyspark.sql.functions as F\n",
+    "import pyspark.sql.types as T\n",
+    "\n",
+    "from datetime import datetime, timedelta\n",
+    "\n",
+    "\n",
+    "#For python script outside SWAN\n",
+    "# from pyspark import SparkContext\n",
+    "# from pyspark.sql import SparkSession"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "id": "a0a68bb6",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-11T13:39:08.407461Z",
+     "start_time": "2023-02-11T13:39:08.403956Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# #Assumptions\n",
+    "\n",
+    "# 1. We are considering locks by different accounts as differnt\n",
+    "# 2. Only Locks created by these PROD_ACCOUNTS = ['transfer_ops', 'wma_prod', 'wmcore_output', 'wmcore_transferor', 'crab_tape_recall', 'sync']"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "id": "1f70f062",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-11T13:39:09.579608Z",
+     "start_time": "2023-02-11T13:39:08.555911Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#specific to SWAN can be removed for the python script\n",
+    "import pandas as pd\n",
+    "\n",
+    "#Pandas options to not truncate columns \n",
+    "pd.options.display.float_format = '{:,.2f}'.format\n",
+    "pd.set_option('display.max_columns', None)\n",
+    "pd.set_option('max_colwidth', None)\n",
+    "pd.set_option('max_rows', None)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "id": "5118b6af",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-11T13:39:09.745716Z",
+     "start_time": "2023-02-11T13:39:09.739397Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "TODAY = (datetime.today() - timedelta(days=0)).strftime('%Y-%m-%d')\n",
+    "\n",
+    "HDFS_RUCIO_LOCKS = f\"/project/awg/cms/rucio/{TODAY}/locks/part*.avro\"\n",
+    "HDFS_RUCIO_RSES = f\"/project/awg/cms/rucio/{TODAY}/rses/part*.avro\"\n",
+    "\n",
+    "HDFS_RUCIO_REPLICAS = f'/project/awg/cms/rucio/{TODAY}/replicas/part*.avro'\n",
+    "HDFS_RUCIO_DIDS = f'/project/awg/cms/rucio/{TODAY}/dids/part*.avro'\n",
+    "\n",
+    "HDFS_RUCIO_CONTENTS = f\"/project/awg/cms/rucio/{TODAY}/contents/part*.avro\"\n",
+    "\n",
+    "# DBS\n",
+    "HDFS_DBS_DATASETS = f'/project/awg/cms/dbs/PROD_GLOBAL/{TODAY}/DATASETS/*.gz'\n",
+    "HDFS_DBS_BLOCKS = f'/project/awg/cms/dbs/PROD_GLOBAL/{TODAY}/BLOCKS/*.gz'\n",
+    "HDFS_DBS_FILES = f'/project/awg/cms/dbs/PROD_GLOBAL/{TODAY}/FILES/*.gz'\n",
+    "\n",
+    "INT_MAX = 2147483647000\n",
+    "\n",
+    "PROD_ACCOUNTS = ['transfer_ops', 'wma_prod', 'wmcore_output', 'wmcore_transferor', 'crab_tape_recall', 'sync']"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "id": "f4364cf7",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-11T13:39:12.469712Z",
+     "start_time": "2023-02-11T13:39:12.465268Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#Verfified \n",
+    "\n",
+    "#1. locks match in "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "id": "ab389882",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-11T13:39:16.807243Z",
+     "start_time": "2023-02-11T13:39:16.795958Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#get dataframes with RSE info\n",
+    "#only select rses with deleted_at to be null\n",
+    "def get_df_rses(spark):\n",
+    "    df_rses = spark.read.format(\"avro\").load(HDFS_RUCIO_RSES) \\\n",
+    "        .filter(F.col('DELETED_AT').isNull()) \\\n",
+    "        .withColumn('rse_id', F.lower(F.hex(F.col('ID')))) \\\n",
+    "        .withColumn('rse_tier', F.split(F.col('RSE'), '_').getItem(0)) \\\n",
+    "        .withColumn('rse_country', F.split(F.col('RSE'), '_').getItem(1)) \\\n",
+    "        .withColumn('rse_kind',\n",
+    "                    F.when((F.col(\"rse\").endswith('Temp') | F.col(\"rse\").endswith('temp') | F.col(\"rse\").endswith('TEMP')),\n",
+    "                         'temp')\n",
+    "                    .when((F.col(\"rse\").endswith('Test') | F.col(\"rse\").endswith('test') | F.col(\"rse\").endswith('TEST')),\n",
+    "                          'test')\n",
+    "                    .otherwise('prod')\n",
+    "                    ) \\\n",
+    "        .withColumnRenamed('RSE', 'rse_name') \\\n",
+    "        .withColumnRenamed('RSE_TYPE', 'rse_type') \\\n",
+    "        .select(['rse_id', 'rse_name', 'rse_type', 'rse_tier', 'rse_country', 'rse_kind'])\n",
+    "    return df_rses"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "id": "0525b3a8",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-11T13:39:18.045868Z",
+     "start_time": "2023-02-11T13:39:18.037900Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#get dataframe with locks info\n",
+    "#convert all sync accounts to single\n",
+    "\n",
+    "def get_df_locks(spark):\n",
+    "    return spark.read.format('avro').load(HDFS_RUCIO_LOCKS) \\\n",
+    "        .filter(F.col('scope') == 'cms') \\\n",
+    "        .withColumn('rse_id', F.lower(F.hex(F.col('RSE_ID')))) \\\n",
+    "        .withColumn('rule_id', F.lower(F.hex(F.col('RULE_ID')))) \\\n",
+    "        .withColumn('file_size', F.col('BYTES').cast(T.LongType())) \\\n",
+    "        .withColumnRenamed('NAME', 'file_name') \\\n",
+    "        .withColumn('account', F.when(F.col('ACCOUNT').startswith(\"sync\"), F.lit(\"sync\")).otherwise(F.col('ACCOUNT'))) \\\n",
+    "        .select(['scope', 'file_name', 'rse_id', 'rule_id', 'account', 'file_size'])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "id": "18432ec1",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-11T13:39:18.637710Z",
+     "start_time": "2023-02-11T13:39:18.630868Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "def get_df_replicas(spark):\n",
+    "    return spark.read.format('avro').load(HDFS_RUCIO_REPLICAS) \\\n",
+    "        .filter(F.col('scope') == 'cms') \\\n",
+    "        .withColumnRenamed('NAME', 'file_name') \\\n",
+    "        .withColumnRenamed('ACCESSED_AT', 'rep_accessed_at') \\\n",
+    "        .select(['file_name', 'rep_accessed_at'])\n",
+    "\n",
+    "\n",
+    "def get_df_dids_files(spark):\n",
+    "    return spark.read.format('avro').load(HDFS_RUCIO_DIDS) \\\n",
+    "        .filter(F.col('DELETED_AT').isNull()) \\\n",
+    "        .filter(F.col('HIDDEN') == '0') \\\n",
+    "        .filter(F.col('SCOPE') == 'cms') \\\n",
+    "        .filter(F.col('DID_TYPE') == 'F') \\\n",
+    "        .withColumnRenamed('NAME', 'file_name') \\\n",
+    "        .withColumnRenamed('ACCESSED_AT', 'dids_accessed_at') \\\n",
+    "        .select(['file_name', 'dids_accessed_at'])\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 9,
+   "id": "0841bf7c",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-11T13:39:19.127960Z",
+     "start_time": "2023-02-11T13:39:19.120995Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "def get_df_accessed_at(spark):\n",
+    "    \n",
+    "    df_replicas = get_df_replicas(spark)\n",
+    "    df_dids = get_df_dids_files(spark)\n",
+    "\n",
+    "    return df_replicas.groupby(\"file_name\").agg(F.max(\"rep_accessed_at\").alias(\"max_rep_accessed_at\"))\\\n",
+    "                            .join(df_dids, [\"file_name\"])\\\n",
+    "                            .withColumn(\n",
+    "                                \"max_rep_accessed_at\", \n",
+    "                                F.when(F.col(\"max_rep_accessed_at\")==INT_MAX, None)\\\n",
+    "                                 .otherwise(F.col(\"max_rep_accessed_at\"))\n",
+    "                            )\\\n",
+    "                            .withColumn(\n",
+    "                                \"dids_accessed_at\", \n",
+    "                                F.when(F.col(\"dids_accessed_at\")==INT_MAX, None)\\\n",
+    "                                 .otherwise(F.col(\"dids_accessed_at\"))\n",
+    "                            )\\\n",
+    "                            .withColumn(\n",
+    "                                \"accessed_at\",\n",
+    "                                F.greatest(F.col(\"max_rep_accessed_at\"), F.col(\"dids_accessed_at\"))\n",
+    "                            )\\\n",
+    "                            .select([\"file_name\", \"accessed_at\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 10,
+   "id": "0fc28613",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-11T13:39:37.673216Z",
+     "start_time": "2023-02-11T13:39:25.938451Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "df_accessed_at = get_df_accessed_at(spark)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 11,
+   "id": "772b32c4",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-09T12:05:36.991211Z",
+     "start_time": "2023-02-09T12:05:36.983404Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "def get_file_locks_tape_and_disk(spark):\n",
+    "    \"\"\"\n",
+    "    List of file locked by production account in \n",
+    "    \"\"\"\n",
+    "    \n",
+    "    #only select locks created by production accounts\n",
+    "    df_locks = get_df_locks(spark).filter(F.col(\"account\").isin(PROD_ACCOUNTS))\n",
+    "    \n",
+    "    #only select rses with production type\n",
+    "    df_rses = get_df_rses(spark).filter(F.col(\"rse_kind\")==\"prod\")\n",
+    "        \n",
+    "    #Enrich locks with RSE info\n",
+    "    df_file_rse = df_locks.alias(\"locks\")\\\n",
+    "                      .join(\n",
+    "                            df_rses.alias(\"rses\"),\n",
+    "                            F.col(\"rses.rse_id\") == F.col(\"locks.rse_id\")\n",
+    "                           )\n",
+    "\n",
+    "    file_on_tape_or_disk = df_file_rse.groupby([\"file_name\", \"file_size\"])\\\n",
+    "                                  .pivot(\"rse_type\").count()\\\n",
+    "                                  .withColumn(\"on_tape\", F.when(F.col(\"tape\").isNull(), 0).otherwise(1))\\\n",
+    "                                  .withColumn(\"on_disk\", F.when(F.col(\"disk\").isNull(), 0).otherwise(1))\\\n",
+    "                                  .select([\"file_name\", \"file_size\", \"on_disk\", \"on_tape\"])\n",
+    "\n",
+    "    return file_on_tape_or_disk"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 32,
+   "id": "0d19495f",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T09:03:04.167424Z",
+     "start_time": "2023-02-03T09:02:19.061313Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "file_on_tape_or_disk = get_file_locks_tape_and_disk(spark)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 98,
+   "id": "73d99df9",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-02T06:16:32.787307Z",
+     "start_time": "2023-02-02T06:16:32.785265Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# df_file_rse.limit(10).toPandas()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 99,
+   "id": "626b4ee6",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-02T06:17:10.415515Z",
+     "start_time": "2023-02-02T06:16:34.950712Z"
+    }
+   },
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 33,
+   "id": "43804f44",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T09:04:04.174059Z",
+     "start_time": "2023-02-03T09:03:04.170854Z"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "23/02/03 10:03:47 ERROR YarnScheduler: Lost executor 117 on ithdp4023.cern.ch: Container from a bad node: container_e158_1675011654942_4575_01_000130 on host: ithdp4023.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:03:47.568]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:03:47.645]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:03:47.649]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:03:47 WARN YarnSchedulerBackend$YarnSchedulerEndpoint: Requesting driver to remove executor 117 for reason Container from a bad node: container_e158_1675011654942_4575_01_000130 on host: ithdp4023.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:03:47.568]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:03:47.645]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:03:47.649]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:03:47 WARN TaskSetManager: Lost task 44.0 in stage 69.0 (TID 1719) (ithdp4023.cern.ch executor 117): ExecutorLostFailure (executor 117 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000130 on host: ithdp4023.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:03:47.568]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:03:47.645]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:03:47.649]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:03:47 WARN TaskSetManager: Lost task 61.0 in stage 69.0 (TID 1736) (ithdp4023.cern.ch executor 117): ExecutorLostFailure (executor 117 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000130 on host: ithdp4023.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:03:47.568]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:03:47.645]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:03:47.649]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:03:47 WARN TaskSetManager: Lost task 10.0 in stage 69.0 (TID 1685) (ithdp4023.cern.ch executor 117): ExecutorLostFailure (executor 117 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000130 on host: ithdp4023.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:03:47.568]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:03:47.645]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:03:47.649]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:03:47 WARN TaskSetManager: Lost task 27.0 in stage 69.0 (TID 1702) (ithdp4023.cern.ch executor 117): ExecutorLostFailure (executor 117 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000130 on host: ithdp4023.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:03:47.568]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:03:47.645]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:03:47.649]Killed by external signal\n",
+      ".\n"
+     ]
+    },
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>file_name</th>\n",
+       "      <th>file_size</th>\n",
+       "      <th>on_disk</th>\n",
+       "      <th>on_tape</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>/store/mc/Summer12/SMS-T2bw_Mstop-225to1000_mLSP-0to900_8TeV-Pythia6Z/AODSIM/START52_V9_FSIM-v1/00009/0A7DFE7B-E3E1-E111-A956-0025901D4982.root</td>\n",
+       "      <td>4272024089</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>/store/mc/RunIISummer16DR80Premix/QCD_Pt-80to120_EMEnriched_TuneCUETP8M1_13TeV_pythia8/AODSIM/PUMoriond17_80X_mcRun2_asymptotic_2016_TrancheIV_v6_ext1-v1/80001/EE433494-ACD4-E611-AEC0-008CFA197D3C.root</td>\n",
+       "      <td>2572847092</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>/store/data/Run2016H/SingleMuon/ALCARECO/HcalCalHBHEMuonFilter-21Feb2020_UL2016-v1/250001/CA3E0956-2D9E-204E-A91F-469C43077536.root</td>\n",
+       "      <td>4125673125</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>/store/hidata/PARun2016C/PAMinimumBias17/RAW/v1/000/286/034/00000/78EBC324-D9B5-E611-AF6C-02163E0143A9.root</td>\n",
+       "      <td>4241003801</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>/store/data/Run2017F/Tau/RAW/v1/000/305/832/00000/26AE4AD3-C1BC-E711-BC2E-02163E0146B4.root</td>\n",
+       "      <td>1439595</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "                                                                                                                                                                                                   file_name  \\\n",
+       "0                                                            /store/mc/Summer12/SMS-T2bw_Mstop-225to1000_mLSP-0to900_8TeV-Pythia6Z/AODSIM/START52_V9_FSIM-v1/00009/0A7DFE7B-E3E1-E111-A956-0025901D4982.root   \n",
+       "1  /store/mc/RunIISummer16DR80Premix/QCD_Pt-80to120_EMEnriched_TuneCUETP8M1_13TeV_pythia8/AODSIM/PUMoriond17_80X_mcRun2_asymptotic_2016_TrancheIV_v6_ext1-v1/80001/EE433494-ACD4-E611-AEC0-008CFA197D3C.root   \n",
+       "2                                                                        /store/data/Run2016H/SingleMuon/ALCARECO/HcalCalHBHEMuonFilter-21Feb2020_UL2016-v1/250001/CA3E0956-2D9E-204E-A91F-469C43077536.root   \n",
+       "3                                                                                                /store/hidata/PARun2016C/PAMinimumBias17/RAW/v1/000/286/034/00000/78EBC324-D9B5-E611-AF6C-02163E0143A9.root   \n",
+       "4                                                                                                                /store/data/Run2017F/Tau/RAW/v1/000/305/832/00000/26AE4AD3-C1BC-E711-BC2E-02163E0146B4.root   \n",
+       "\n",
+       "    file_size  on_disk  on_tape  \n",
+       "0  4272024089        0        1  \n",
+       "1  2572847092        0        1  \n",
+       "2  4125673125        0        1  \n",
+       "3  4241003801        0        1  \n",
+       "4     1439595        0        1  "
+      ]
+     },
+     "execution_count": 33,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "file_on_tape_or_disk.limit(5).toPandas()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 34,
+   "id": "be35f28c",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T09:04:43.631545Z",
+     "start_time": "2023-02-03T09:04:04.176839Z"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "23/02/03 10:04:39 ERROR YarnScheduler: Lost executor 125 on ithdp3106.cern.ch: Container from a bad node: container_e158_1675011654942_4575_01_000139 on host: ithdp3106.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:04:38.946]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:04:39.006]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:04:39.009]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:04:39 WARN YarnSchedulerBackend$YarnSchedulerEndpoint: Requesting driver to remove executor 125 for reason Container from a bad node: container_e158_1675011654942_4575_01_000139 on host: ithdp3106.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:04:38.946]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:04:39.006]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:04:39.009]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:04:39 WARN TaskSetManager: Lost task 59.0 in stage 76.0 (TID 2075) (ithdp3106.cern.ch executor 125): ExecutorLostFailure (executor 125 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000139 on host: ithdp3106.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:04:38.946]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:04:39.006]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:04:39.009]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:04:39 WARN TaskSetManager: Lost task 91.0 in stage 76.0 (TID 2107) (ithdp3106.cern.ch executor 125): ExecutorLostFailure (executor 125 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000139 on host: ithdp3106.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:04:38.946]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:04:39.006]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:04:39.009]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:04:39 WARN TaskSetManager: Lost task 123.0 in stage 76.0 (TID 2139) (ithdp3106.cern.ch executor 125): ExecutorLostFailure (executor 125 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000139 on host: ithdp3106.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:04:38.946]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:04:39.006]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:04:39.009]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:04:39 WARN TaskSetManager: Lost task 27.0 in stage 76.0 (TID 2043) (ithdp3106.cern.ch executor 125): ExecutorLostFailure (executor 125 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000139 on host: ithdp3106.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:04:38.946]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:04:39.006]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:04:39.009]Killed by external signal\n",
+      ".\n"
+     ]
+    },
+    {
+     "data": {
+      "text/plain": [
+       "79491088"
+      ]
+     },
+     "execution_count": 34,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "file_on_tape_or_disk.count()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 26,
+   "id": "d584a1ff",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T08:56:52.660451Z",
+     "start_time": "2023-02-03T08:56:15.901683Z"
+    }
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "79491088"
+      ]
+     },
+     "execution_count": 26,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "file_on_tape_or_disk.select([\"file_name\"]).distinct().count()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 39,
+   "id": "2e4ce62f",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T09:21:34.008723Z",
+     "start_time": "2023-02-03T09:21:34.004396Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "def get_df_contents(spark):\n",
+    "    return spark.read.format('avro').load(HDFS_RUCIO_CONTENTS) \\\n",
+    "        .filter(F.col(\"scope\")==\"cms\")\\\n",
+    "        .select(['name', 'child_name', 'did_type', 'child_type'])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 40,
+   "id": "db32e832",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T09:21:34.486180Z",
+     "start_time": "2023-02-03T09:21:34.163783Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "df_contents = get_df_contents(spark)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "45ae565a",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T09:29:06.117786Z",
+     "start_time": "2023-02-03T09:29:06.063051Z"
+    }
+   },
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 59,
+   "id": "ae8cc732",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T09:46:44.285704Z",
+     "start_time": "2023-02-03T09:46:44.235281Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "df_join_first = df_contents.alias(\"c1\").join(df_contents.alias(\"c2\"),\n",
+    "                             [\n",
+    "                                 F.col(\"c1.child_name\") == F.col(\"c2.name\"),\n",
+    "                                 F.col(\"c1.child_type\") == \"D\",\n",
+    "                                 F.col(\"c2.child_type\") == \"F\",\n",
+    "                                 ~F.col(\"c1.name\").endswith(\"/CONTAINER\")\n",
+    "                             ]\n",
+    "                            )\\\n",
+    "                            .select([\"c1.name\", \"c1.did_type\", \"c2.child_name\", \"c2.child_type\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 60,
+   "id": "9270535f",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T09:47:24.789871Z",
+     "start_time": "2023-02-03T09:46:51.171580Z"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "CPU times: user 145 ms, sys: 36.4 ms, total: 181 ms\n",
+      "Wall time: 33.6 s\n"
+     ]
+    },
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>name</th>\n",
+       "      <th>did_type</th>\n",
+       "      <th>child_name</th>\n",
+       "      <th>child_type</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>/ADDGravToGG_MS-10000_NED-2_KK-1_M-1000To2000_13TeV-sherpa/RunIISummer16NanoAODv7-PUMoriond17_Nano02Apr2020_102X_mcRun2_asymptotic_v8-v1/NANOAODSIM</td>\n",
+       "      <td>C</td>\n",
+       "      <td>/store/mc/RunIISummer16NanoAODv7/ADDGravToGG_MS-10000_NED-2_KK-1_M-1000To2000_13TeV-sherpa/NANOAODSIM/PUMoriond17_Nano02Apr2020_102X_mcRun2_asymptotic_v8-v1/60000/57C9E41A-54F0-1D48-831B-AFD05AF643E0.root</td>\n",
+       "      <td>F</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>/ADDGravToGG_MS-10000_NED-4_KK-1_M-1000To2000_13TeV-sherpa/RunIISummer16NanoAODv5-PUMoriond17_Nano1June2019_102X_mcRun2_asymptotic_v7-v2/NANOAODSIM</td>\n",
+       "      <td>C</td>\n",
+       "      <td>/store/mc/RunIISummer16NanoAODv5/ADDGravToGG_MS-10000_NED-4_KK-1_M-1000To2000_13TeV-sherpa/NANOAODSIM/PUMoriond17_Nano1June2019_102X_mcRun2_asymptotic_v7-v2/30000/6E384171-F1F5-7644-83D9-5F4A03924B6F.root</td>\n",
+       "      <td>F</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>/ADDGravToGG_MS-10000_NED-4_KK-1_M-1000To2000_13TeV-sherpa/RunIISummer16NanoAODv5-PUMoriond17_Nano1June2019_102X_mcRun2_asymptotic_v7-v2/NANOAODSIM</td>\n",
+       "      <td>C</td>\n",
+       "      <td>/store/mc/RunIISummer16NanoAODv5/ADDGravToGG_MS-10000_NED-4_KK-1_M-1000To2000_13TeV-sherpa/NANOAODSIM/PUMoriond17_Nano1June2019_102X_mcRun2_asymptotic_v7-v2/30000/927E7201-808A-E940-A3FE-63A56FA9B40F.root</td>\n",
+       "      <td>F</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>/ADDGravToGG_MS-11000_NED-2_KK-1_M-4000To11000_13TeV-sherpa/RunIISummer16NanoAODv3-PUMoriond17_94X_mcRun2_asymptotic_v3-v1/NANOAODSIM</td>\n",
+       "      <td>C</td>\n",
+       "      <td>/store/mc/RunIISummer16NanoAODv3/ADDGravToGG_MS-11000_NED-2_KK-1_M-4000To11000_13TeV-sherpa/NANOAODSIM/PUMoriond17_94X_mcRun2_asymptotic_v3-v1/100000/2EECAD03-BDC8-E811-A535-001E67F67372.root</td>\n",
+       "      <td>F</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>/ADDGravToGG_MS-11000_NED-2_KK-1_M-500To1000_13TeV-sherpa/RunIISummer16DR80Premix-PUMoriond17_80X_mcRun2_asymptotic_2016_TrancheIV_v6-v2/AODSIM</td>\n",
+       "      <td>C</td>\n",
+       "      <td>/store/mc/RunIISummer16DR80Premix/ADDGravToGG_MS-11000_NED-2_KK-1_M-500To1000_13TeV-sherpa/AODSIM/PUMoriond17_80X_mcRun2_asymptotic_2016_TrancheIV_v6-v2/80000/AC24DE56-62F0-E611-92F1-6C3BE5B56498.root</td>\n",
+       "      <td>F</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "                                                                                                                                                  name  \\\n",
+       "0  /ADDGravToGG_MS-10000_NED-2_KK-1_M-1000To2000_13TeV-sherpa/RunIISummer16NanoAODv7-PUMoriond17_Nano02Apr2020_102X_mcRun2_asymptotic_v8-v1/NANOAODSIM   \n",
+       "1  /ADDGravToGG_MS-10000_NED-4_KK-1_M-1000To2000_13TeV-sherpa/RunIISummer16NanoAODv5-PUMoriond17_Nano1June2019_102X_mcRun2_asymptotic_v7-v2/NANOAODSIM   \n",
+       "2  /ADDGravToGG_MS-10000_NED-4_KK-1_M-1000To2000_13TeV-sherpa/RunIISummer16NanoAODv5-PUMoriond17_Nano1June2019_102X_mcRun2_asymptotic_v7-v2/NANOAODSIM   \n",
+       "3                /ADDGravToGG_MS-11000_NED-2_KK-1_M-4000To11000_13TeV-sherpa/RunIISummer16NanoAODv3-PUMoriond17_94X_mcRun2_asymptotic_v3-v1/NANOAODSIM   \n",
+       "4      /ADDGravToGG_MS-11000_NED-2_KK-1_M-500To1000_13TeV-sherpa/RunIISummer16DR80Premix-PUMoriond17_80X_mcRun2_asymptotic_2016_TrancheIV_v6-v2/AODSIM   \n",
+       "\n",
+       "  did_type  \\\n",
+       "0        C   \n",
+       "1        C   \n",
+       "2        C   \n",
+       "3        C   \n",
+       "4        C   \n",
+       "\n",
+       "                                                                                                                                                                                                     child_name  \\\n",
+       "0  /store/mc/RunIISummer16NanoAODv7/ADDGravToGG_MS-10000_NED-2_KK-1_M-1000To2000_13TeV-sherpa/NANOAODSIM/PUMoriond17_Nano02Apr2020_102X_mcRun2_asymptotic_v8-v1/60000/57C9E41A-54F0-1D48-831B-AFD05AF643E0.root   \n",
+       "1  /store/mc/RunIISummer16NanoAODv5/ADDGravToGG_MS-10000_NED-4_KK-1_M-1000To2000_13TeV-sherpa/NANOAODSIM/PUMoriond17_Nano1June2019_102X_mcRun2_asymptotic_v7-v2/30000/6E384171-F1F5-7644-83D9-5F4A03924B6F.root   \n",
+       "2  /store/mc/RunIISummer16NanoAODv5/ADDGravToGG_MS-10000_NED-4_KK-1_M-1000To2000_13TeV-sherpa/NANOAODSIM/PUMoriond17_Nano1June2019_102X_mcRun2_asymptotic_v7-v2/30000/927E7201-808A-E940-A3FE-63A56FA9B40F.root   \n",
+       "3               /store/mc/RunIISummer16NanoAODv3/ADDGravToGG_MS-11000_NED-2_KK-1_M-4000To11000_13TeV-sherpa/NANOAODSIM/PUMoriond17_94X_mcRun2_asymptotic_v3-v1/100000/2EECAD03-BDC8-E811-A535-001E67F67372.root   \n",
+       "4      /store/mc/RunIISummer16DR80Premix/ADDGravToGG_MS-11000_NED-2_KK-1_M-500To1000_13TeV-sherpa/AODSIM/PUMoriond17_80X_mcRun2_asymptotic_2016_TrancheIV_v6-v2/80000/AC24DE56-62F0-E611-92F1-6C3BE5B56498.root   \n",
+       "\n",
+       "  child_type  \n",
+       "0          F  \n",
+       "1          F  \n",
+       "2          F  \n",
+       "3          F  \n",
+       "4          F  "
+      ]
+     },
+     "execution_count": 60,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "%%time\n",
+    "df_join_first.limit(5).toPandas()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 53,
+   "id": "14f43101",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T09:38:04.419981Z",
+     "start_time": "2023-02-03T09:37:49.553960Z"
+    }
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "86065692"
+      ]
+     },
+     "execution_count": 53,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "df_join_first.count()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 58,
+   "id": "9db2881b",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T09:45:16.317237Z",
+     "start_time": "2023-02-03T09:44:02.409344Z"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "23/02/03 10:45:04 ERROR YarnScheduler: Lost executor 283 on ithdp4022.cern.ch: Container from a bad node: container_e158_1675011654942_4575_01_000320 on host: ithdp4022.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.169]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.221]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.224]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN YarnSchedulerBackend$YarnSchedulerEndpoint: Requesting driver to remove executor 283 for reason Container from a bad node: container_e158_1675011654942_4575_01_000320 on host: ithdp4022.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.169]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.221]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.224]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 117.0 in stage 227.0 (TID 7679) (ithdp4022.cern.ch executor 283): ExecutorLostFailure (executor 283 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000320 on host: ithdp4022.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.169]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.221]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.224]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 21.0 in stage 227.0 (TID 7583) (ithdp4022.cern.ch executor 283): ExecutorLostFailure (executor 283 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000320 on host: ithdp4022.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.169]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.221]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.224]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 53.0 in stage 227.0 (TID 7615) (ithdp4022.cern.ch executor 283): ExecutorLostFailure (executor 283 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000320 on host: ithdp4022.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.169]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.221]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.224]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 85.0 in stage 227.0 (TID 7647) (ithdp4022.cern.ch executor 283): ExecutorLostFailure (executor 283 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000320 on host: ithdp4022.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.169]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.221]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.224]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 ERROR YarnScheduler: Lost executor 265 on ithdp2115.cern.ch: Container from a bad node: container_e158_1675011654942_4575_01_000304 on host: ithdp2115.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.254]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.312]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.315]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN YarnSchedulerBackend$YarnSchedulerEndpoint: Requesting driver to remove executor 265 for reason Container from a bad node: container_e158_1675011654942_4575_01_000304 on host: ithdp2115.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.254]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.312]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.315]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 123.0 in stage 227.0 (TID 7685) (ithdp2115.cern.ch executor 265): ExecutorLostFailure (executor 265 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000304 on host: ithdp2115.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.254]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.312]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.315]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 27.0 in stage 227.0 (TID 7589) (ithdp2115.cern.ch executor 265): ExecutorLostFailure (executor 265 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000304 on host: ithdp2115.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.254]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.312]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.315]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 59.0 in stage 227.0 (TID 7621) (ithdp2115.cern.ch executor 265): ExecutorLostFailure (executor 265 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000304 on host: ithdp2115.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.254]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.312]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.315]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 91.0 in stage 227.0 (TID 7653) (ithdp2115.cern.ch executor 265): ExecutorLostFailure (executor 265 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000304 on host: ithdp2115.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.254]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.312]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.315]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN YarnSchedulerBackend$YarnSchedulerEndpoint: Requesting driver to remove executor 275 for reason Container from a bad node: container_e158_1675011654942_4575_01_000314 on host: ithdp2123.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.328]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.378]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.380]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 ERROR YarnScheduler: Lost executor 275 on ithdp2123.cern.ch: Container from a bad node: container_e158_1675011654942_4575_01_000314 on host: ithdp2123.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.328]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.378]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.380]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 57.0 in stage 227.0 (TID 7619) (ithdp2123.cern.ch executor 275): ExecutorLostFailure (executor 275 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000314 on host: ithdp2123.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.328]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.378]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.380]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 89.0 in stage 227.0 (TID 7651) (ithdp2123.cern.ch executor 275): ExecutorLostFailure (executor 275 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000314 on host: ithdp2123.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.328]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.378]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.380]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 121.0 in stage 227.0 (TID 7683) (ithdp2123.cern.ch executor 275): ExecutorLostFailure (executor 275 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000314 on host: ithdp2123.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.328]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.378]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.380]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 25.0 in stage 227.0 (TID 7587) (ithdp2123.cern.ch executor 275): ExecutorLostFailure (executor 275 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000314 on host: ithdp2123.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.328]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.378]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.380]Killed by external signal\n",
+      ".\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "23/02/03 10:45:04 ERROR YarnScheduler: Lost executor 286 on ithdp4024.cern.ch: Container from a bad node: container_e158_1675011654942_4575_01_000325 on host: ithdp4024.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.668]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.720]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.723]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN YarnSchedulerBackend$YarnSchedulerEndpoint: Requesting driver to remove executor 286 for reason Container from a bad node: container_e158_1675011654942_4575_01_000325 on host: ithdp4024.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.668]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.720]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.723]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 33.0 in stage 227.0 (TID 7595) (ithdp4024.cern.ch executor 286): ExecutorLostFailure (executor 286 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000325 on host: ithdp4024.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.668]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.720]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.723]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 65.0 in stage 227.0 (TID 7627) (ithdp4024.cern.ch executor 286): ExecutorLostFailure (executor 286 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000325 on host: ithdp4024.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.668]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.720]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.723]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 97.0 in stage 227.0 (TID 7659) (ithdp4024.cern.ch executor 286): ExecutorLostFailure (executor 286 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000325 on host: ithdp4024.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.668]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.720]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.723]Killed by external signal\n",
+      ".\n",
+      "23/02/03 10:45:04 WARN TaskSetManager: Lost task 1.0 in stage 227.0 (TID 7563) (ithdp4024.cern.ch executor 286): ExecutorLostFailure (executor 286 exited caused by one of the running tasks) Reason: Container from a bad node: container_e158_1675011654942_4575_01_000325 on host: ithdp4024.cern.ch. Exit status: 137. Diagnostics: [2023-02-03 10:45:04.668]Container killed on request. Exit code is 137\n",
+      "[2023-02-03 10:45:04.720]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-03 10:45:04.723]Killed by external signal\n",
+      ".\n"
+     ]
+    },
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>file_name</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>/store/data/Run2016E/BTagCSV/AOD/21Feb2020_UL2016_HIPM-v1/70003/6E6DFC89-36CA-A843-B1E8-480E82A0F97F.root</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>/store/data/Run2018A/SingleMuon/AOD/12Nov2019_UL2018_rsb-v1/230000/ABE0C1CA-F5EA-274F-B19A-B0F7D640E7B2.root</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>/store/data/Run2018A/SingleMuon/AOD/12Nov2019_UL2018_rsb-v1/30001/6E1D545A-159C-F646-A919-6AAC47DF3F15.root</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>/store/data/Run2018B/MinimumBias/AOD/12Nov2019_UL2018-v1/260000/EE5E6088-F88D-9044-AE02-1D79844EA7B0.root</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>/store/data/Run2018D/EGamma/AOD/12Nov2019_UL2018-v4/120004/2BBBE356-56C3-8445-A117-5FAA7CFAC7E3.root</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "                                                                                                      file_name\n",
+       "0     /store/data/Run2016E/BTagCSV/AOD/21Feb2020_UL2016_HIPM-v1/70003/6E6DFC89-36CA-A843-B1E8-480E82A0F97F.root\n",
+       "1  /store/data/Run2018A/SingleMuon/AOD/12Nov2019_UL2018_rsb-v1/230000/ABE0C1CA-F5EA-274F-B19A-B0F7D640E7B2.root\n",
+       "2   /store/data/Run2018A/SingleMuon/AOD/12Nov2019_UL2018_rsb-v1/30001/6E1D545A-159C-F646-A919-6AAC47DF3F15.root\n",
+       "3     /store/data/Run2018B/MinimumBias/AOD/12Nov2019_UL2018-v1/260000/EE5E6088-F88D-9044-AE02-1D79844EA7B0.root\n",
+       "4          /store/data/Run2018D/EGamma/AOD/12Nov2019_UL2018-v4/120004/2BBBE356-56C3-8445-A117-5FAA7CFAC7E3.root"
+      ]
+     },
+     "execution_count": 58,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "file_on_tape_or_disk.select([\"file_name\"]).subtract(df_join_first.select([\"child_name\"]).distinct()).limit(5).toPandas()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "acbda83a",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "f038cf98",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "250d07c8",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "7f819f46",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "b6c39ad8",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 74,
+   "id": "afc39207",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T11:32:09.074351Z",
+     "start_time": "2023-02-03T11:32:09.065593Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "import dbs_schemas\n",
+    "\n",
+    "csvreader = spark.read.format('csv') \\\n",
+    "        .option('nullValue', 'null') \\\n",
+    "        .option('mode', 'FAILFAST')\n",
+    "\n",
+    "def get_df_dbs_files(spark):\n",
+    "    \"\"\"Create DBS Files table dataframe\n",
+    "    \"\"\"\n",
+    "    return csvreader.schema(dbs_schemas.schema_files()).load(HDFS_DBS_FILES) \\\n",
+    "        .filter(F.col('IS_FILE_VALID') == '1') \\\n",
+    "        .withColumnRenamed('LOGICAL_FILE_NAME', 'FILE_NAME') \\\n",
+    "        .select(['FILE_NAME', 'DATASET_ID'])\n",
+    "\n",
+    "\n",
+    "def get_df_dbs_datasets(spark):\n",
+    "    \"\"\"Create DBS Datasets table dataframe\n",
+    "    \"\"\"\n",
+    "    return csvreader.schema(dbs_schemas.schema_datasets()).load(HDFS_DBS_DATASETS) \\\n",
+    "        .filter(F.col('IS_DATASET_VALID') == '1') \\\n",
+    "        .select(['DATASET_ID', 'DATASET'])\n",
+    "\n",
+    "\n",
+    "def get_df_file_dataset_map(spark):\n",
+    "    \n",
+    "    df_dbs_files = get_df_dbs_files(spark)\n",
+    "    df_dbs_datasets = get_df_dbs_datasets(spark)\n",
+    "    \n",
+    "    return df_dbs_files.join(df_dbs_datasets, [\"dataset_id\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 75,
+   "id": "fd8f0bcd",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T11:32:10.746747Z",
+     "start_time": "2023-02-03T11:32:09.499375Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "df_file_dataset_map = get_df_file_dataset_map(spark)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 76,
+   "id": "0129830a",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T11:33:50.852951Z",
+     "start_time": "2023-02-03T11:33:09.133744Z"
+    }
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>DATASET_ID</th>\n",
+       "      <th>FILE_NAME</th>\n",
+       "      <th>DATASET</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>392</td>\n",
+       "      <td>/store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0002/DA5C7709-09D9-DC11-A245-003048725589.root</td>\n",
+       "      <td>/w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>392</td>\n",
+       "      <td>/store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0002/8C2DDAE3-16D9-DC11-9303-001A4BA96778.root</td>\n",
+       "      <td>/w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>392</td>\n",
+       "      <td>/store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/EAE081BC-16D9-DC11-B62F-003048724889.root</td>\n",
+       "      <td>/w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>392</td>\n",
+       "      <td>/store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/D6978679-02D9-DC11-9337-00304872186F.root</td>\n",
+       "      <td>/w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>392</td>\n",
+       "      <td>/store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/32AC7331-01D9-DC11-9AD9-001A4BA9678A.root</td>\n",
+       "      <td>/w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>5</th>\n",
+       "      <td>392</td>\n",
+       "      <td>/store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/143D3011-01D9-DC11-9544-00093D120BF7.root</td>\n",
+       "      <td>/w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>6</th>\n",
+       "      <td>392</td>\n",
+       "      <td>/store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/F895904B-F2D8-DC11-9C73-001A4BA908AA.root</td>\n",
+       "      <td>/w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>7</th>\n",
+       "      <td>392</td>\n",
+       "      <td>/store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/F25E08D0-F1D8-DC11-88FA-00093D11BF7D.root</td>\n",
+       "      <td>/w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>8</th>\n",
+       "      <td>392</td>\n",
+       "      <td>/store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/E08788CF-F1D8-DC11-B305-00093D12033E.root</td>\n",
+       "      <td>/w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>9</th>\n",
+       "      <td>392</td>\n",
+       "      <td>/store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/D494BB92-DCD8-DC11-AA7F-00093D12055E.root</td>\n",
+       "      <td>/w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "   DATASET_ID  \\\n",
+       "0         392   \n",
+       "1         392   \n",
+       "2         392   \n",
+       "3         392   \n",
+       "4         392   \n",
+       "5         392   \n",
+       "6         392   \n",
+       "7         392   \n",
+       "8         392   \n",
+       "9         392   \n",
+       "\n",
+       "                                                                                                         FILE_NAME  \\\n",
+       "0  /store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0002/DA5C7709-09D9-DC11-A245-003048725589.root   \n",
+       "1  /store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0002/8C2DDAE3-16D9-DC11-9303-001A4BA96778.root   \n",
+       "2  /store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/EAE081BC-16D9-DC11-B62F-003048724889.root   \n",
+       "3  /store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/D6978679-02D9-DC11-9337-00304872186F.root   \n",
+       "4  /store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/32AC7331-01D9-DC11-9AD9-001A4BA9678A.root   \n",
+       "5  /store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/143D3011-01D9-DC11-9544-00093D120BF7.root   \n",
+       "6  /store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/F895904B-F2D8-DC11-9C73-001A4BA908AA.root   \n",
+       "7  /store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/F25E08D0-F1D8-DC11-88FA-00093D11BF7D.root   \n",
+       "8  /store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/E08788CF-F1D8-DC11-B305-00093D12033E.root   \n",
+       "9  /store/mc/2008/2/10/CSA07-w1j_300ptw800_alpgen-alpgen-1202637163/0001/D494BB92-DCD8-DC11-AA7F-00093D12055E.root   \n",
+       "\n",
+       "                                                          DATASET  \n",
+       "0  /w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO  \n",
+       "1  /w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO  \n",
+       "2  /w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO  \n",
+       "3  /w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO  \n",
+       "4  /w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO  \n",
+       "5  /w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO  \n",
+       "6  /w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO  \n",
+       "7  /w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO  \n",
+       "8  /w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO  \n",
+       "9  /w1j_300ptw800_alpgen-alpgen/CMSSW_1_6_7-CSA07-1202637163/RECO  "
+      ]
+     },
+     "execution_count": 76,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "df_file_dataset_map.limit(10).toPandas()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 64,
+   "id": "0a646584",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T11:24:29.515974Z",
+     "start_time": "2023-02-03T11:24:29.512121Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "\n",
+    "\n",
+    "# def get_df_replicas(spark):\n",
+    "#     return spark.read.format('avro').load(HDFS_RUCIO_REPLICAS) \\\n",
+    "#         .filter(F.col('scope') == 'cms') \\\n",
+    "#         .withColumn('rse_id', F.lower(F.hex(F.col('RSE_ID')))) \\\n",
+    "#         .withColumn('file_size', F.col('BYTES').cast(T.LongType())) \\\n",
+    "#         .withColumn('lock_cnt', F.col('LOCK_CNT').cast(T.LongType())) \\\n",
+    "#         .withColumnRenamed('NAME', 'file_name') \\\n",
+    "#         .withColumnRenamed('ACCESSED_AT', 'rep_accessed_at') \\\n",
+    "#         .select(['scope', 'file_name', 'rse_id', 'rep_accessed_at', 'lock_cnt'])\n",
+    "\n",
+    "\n",
+    "\n",
+    "\n",
+    "# def get_df_dids_files(spark):\n",
+    "#     \"\"\"Create rucio DIDS table dataframe with just for files\n",
+    "#     \"\"\"\n",
+    "#     return spark.read.format('avro').load(HDFS_RUCIO_DIDS) \\\n",
+    "#         .filter(col('DELETED_AT').isNull()) \\\n",
+    "#         .filter(col('HIDDEN') == '0') \\\n",
+    "#         .filter(col('SCOPE') == 'cms') \\\n",
+    "#         .filter(col('DID_TYPE') == 'F') \\\n",
+    "#         .withColumnRenamed('NAME', 'f_name') \\\n",
+    "#         .withColumnRenamed('ACCESSED_AT', 'dids_accessed_at') \\\n",
+    "#         .withColumnRenamed('CREATED_AT', 'dids_created_at') \\\n",
+    "#         .withColumn('f_size_dids', col('BYTES').cast(LongType())) \\\n",
+    "#         .select(['f_name', 'f_size_dids', 'dids_accessed_at', 'dids_created_at'])\\\n",
+    "#         .select(['f_name', 'dids_accessed_at'])\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 65,
+   "id": "9158dea9",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-03T11:24:29.707650Z",
+     "start_time": "2023-02-03T11:24:29.703583Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# df_locks_rse = my_df_locks.alias(\"locks\")\\\n",
+    "#                       .join(\n",
+    "#                             df_rses.alias(\"rses\"),\n",
+    "#                             F.col(\"rses.rse_id\") == F.col(\"locks.rse_id\")\n",
+    "#                            )\n",
+    "\n",
+    "# df_replicas_rse = my_df_replicas.alias(\"replicas\")\\\n",
+    "#                         .join(\n",
+    "#                             df_rses.alias(\"rses\"),\n",
+    "#                             F.col(\"rses.rse_id\") == F.col(\"replicas.rse_id\")\n",
+    "#                            )\n",
+    "\n",
+    "# df_dids_rse = my_df_dids.alias(\"dids\")\\\n",
+    "#                         .join(\n",
+    "#                             df_rses.alias(\"rses\"),\n",
+    "#                             F.col(\"rses.rse_id\") == F.col(\"replicas.rse_id\")\n",
+    "#                            )"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "85ce114e",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.9.12"
+  },
+  "sparkconnect": {
+   "bundled_options": [],
+   "list_of_options": [
+    {
+     "name": "spark.jars.packages",
+     "value": "org.apache.spark:spark-avro_2.12:3.2.1"
+    }
+   ]
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}

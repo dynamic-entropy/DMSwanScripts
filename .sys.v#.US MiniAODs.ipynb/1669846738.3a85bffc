@@ -1,0 +1,779 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "430a400b",
+   "metadata": {},
+   "source": [
+    "Let's review MINIAOD(SIM) usage on US disk sites (T1 and T2).\n",
+    "\n",
+    "We need a breakdown of\n",
+    "\n",
+    "Campaign name | size on US disks | last accessed\n",
+    "\n",
+    "After that, we can choose where to put the cut and lift the rules for unused or super old campaigns.\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "47a93044",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T21:32:23.221107Z",
+     "start_time": "2022-11-30T21:32:23.216549Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#import\n",
+    "\n",
+    "from datetime import datetime, timedelta\n",
+    "import pandas as pd\n",
+    "import pyspark.sql.functions as F\n",
+    "import pyspark.sql.types as T"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "9561170c",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T21:32:23.446612Z",
+     "start_time": "2022-11-30T21:32:23.443588Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "TODAY = datetime.today()\n",
+    "# TODAY = TODAY - timedelta(days=1)# uncomment to use YESTERDAY as today\n",
+    "TODAY = TODAY.strftime('%Y-%m-%d')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "81dbd2e0",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T21:32:23.689496Z",
+     "start_time": "2022-11-30T21:32:23.686084Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#pandas display settings\n",
+    "\n",
+    "pd.options.display.float_format = '{:,.2f}'.format\n",
+    "pd.set_option('display.max_colwidth', None)\n",
+    "pd.set_option('display.max_rows', None)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "ca728d0e",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T21:32:23.966280Z",
+     "start_time": "2022-11-30T21:32:23.962713Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#HDFS import paths\n",
+    "\n",
+    "HDFS_RUCIO_CONTENTS = \"/project/awg/cms/rucio/{}/contents/part*.avro\".format(TODAY)\n",
+    "HDFS_RUCIO_REPLICAS = \"/project/awg/cms/rucio/{}/replicas/part*.avro\".format(TODAY)\n",
+    "HDFS_RUCIO_DIDS     = \"/project/awg/cms/rucio/{}/dids/part*.avro\".format(TODAY)\n",
+    "HDFS_RUCIO_LOCKS    = \"/project/awg/cms/rucio/{}/locks/part*.avro\".format(TODAY)\n",
+    "HDFS_RUCIO_RSES     = \"/project/awg/cms/rucio/{}/rses/part*.avro\".format(TODAY)\n",
+    "HDFS_RUCIO_RULES     = \"/project/awg/cms/rucio/{}/rules/part*.avro\".format(TODAY)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "b957edcc",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "f4d1be2e",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T21:32:24.770083Z",
+     "start_time": "2022-11-30T21:32:24.692584Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "\n",
+    "df_rses = spark.read.format('avro').load(HDFS_RUCIO_RSES)\\\n",
+    "    .withColumn('rse_id', F.lower(F.hex(F.col('ID'))))\\\n",
+    "    .withColumnRenamed('RSE', 'rse_name')\\\n",
+    "    .withColumnRenamed('RSE_TYPE', 'rse_type')\\\n",
+    "    .select(['rse_name', 'rse_id', 'rse_type'])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "7b29b5e3",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T20:55:57.899552Z",
+     "start_time": "2022-11-30T20:55:51.068907Z"
+    }
+   },
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "1c326978",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T21:59:58.303629Z",
+     "start_time": "2022-11-30T21:59:58.276495Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# Get the list of desired Rses - T1 and T2 Rses at US sites\n",
+    "\n",
+    "\n",
+    "df_disk_rses = df_rses.filter(\n",
+    "                            ( ~ F.col('rse_name').contains(\"_Tape\") ) & \\\n",
+    "                            ( ~ F.col('rse_name').contains(\"T3_\") ) & \\\n",
+    "                            ( ~ F.col('rse_name').contains(\"_Test\") ) & \\\n",
+    "                            ( ~ F.col('rse_name').contains(\"_Temp\") ) & \\\n",
+    "                            ( ~ F.col('rse_name').contains(\"_Ceph\") )\n",
+    "                           )\n",
+    "\n",
+    "\n",
+    "SITE = \"US\" #T2_CH_CERN\n",
+    "\n",
+    "df_us_disk_rses = df_disk_rses.filter(F.col('rse_name').contains(SITE))\n",
+    "df_non_us_disk_rses = df_disk_rses.filter(~F.col('rse_name').contains(SITE))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "3911d8ea",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T21:59:59.677020Z",
+     "start_time": "2022-11-30T21:59:59.453756Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "df_us_disk_rses.toPandas()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "c9a615fe",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:00:00.253895Z",
+     "start_time": "2022-11-30T21:59:59.678921Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# MINIAOD(SIM) files with locks\n",
+    "\n",
+    "df_locks = spark.read.format('avro').load(HDFS_RUCIO_LOCKS) \\\n",
+    "    .filter(F.col(\"STATE\") == 'O') \\\n",
+    "    .withColumnRenamed(\"NAME\", \"file_name\") \\\n",
+    "    .withColumn('file_size', F.col('BYTES').cast(T.LongType())) \\\n",
+    "    .withColumn('rule', F.lower(F.hex(F.col('RULE_ID')))) \\\n",
+    "    .withColumn('rse_id', F.lower(F.hex(F.col('RSE_ID')))) \\\n",
+    "    .withColumn(\"created_date\", F.from_unixtime(F.col('created_at')/1000).cast(T.DateType())) \\\n",
+    "    .withColumn(\"rule_age_days\", F.datediff(F.current_date(), F.col('created_date'))) \\\n",
+    "    .select([\"file_name\", \"file_size\", \"rule\", \"rse_id\", \"created_date\", \"rule_age_days\"])\n",
+    "\n",
+    "\n",
+    "df_locks_miniaods = df_locks.filter(F.col('file_name').contains('MINIAOD'))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "b9a1d56e",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "6d2ce659",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:00:00.257572Z",
+     "start_time": "2022-11-30T22:00:00.255651Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "######################################################"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "90cfd6eb",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "66d1f36f",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:00:17.503182Z",
+     "start_time": "2022-11-30T22:00:17.500946Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#################################################################################"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "aeb9509d",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:00:17.982871Z",
+     "start_time": "2022-11-30T22:00:17.980743Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# df_locks.limit(5).toPandas()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "9f3666dd",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:00:18.478626Z",
+     "start_time": "2022-11-30T22:00:18.434262Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "df_locks_miniaod_us = df_us_disk_rses.alias(\"us_rses\")\\\n",
+    "                            .join(df_locks_miniaods.alias(\"locks\"), F.col(\"us_rses.rse_id\")==F.col(\"locks.rse_id\"))\\\n",
+    "                            .select([\"us_rses.rse_name\", \"us_rses.rse_id\", \"locks.file_name\", \"locks.file_size\", \"locks.rule\"])\n",
+    "\n",
+    "df_locks_miniaod_non_us = df_non_us_disk_rses.alias(\"non_us_rses\")\\\n",
+    "                            .join(df_locks_miniaods.alias(\"locks\"), F.col(\"non_us_rses.rse_id\")==F.col(\"locks.rse_id\"))\\\n",
+    "                            .select([\"non_us_rses.rse_name\", \"non_us_rses.rse_id\", \"locks.file_name\", \"locks.file_size\", \"locks.rule\"])\n",
+    "\n",
+    "df_locks_miniaod_all = df_rses.alias(\"all_rses\")\\\n",
+    "                            .join(df_locks_miniaods.alias(\"locks\"), F.col(\"all_rses.rse_id\")==F.col(\"locks.rse_id\"))\\\n",
+    "                            .select([\"all_rses.rse_name\", \"all_rses.rse_id\", \"locks.file_name\", \"locks.file_size\", \"locks.rule\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "f9bc1e30",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:00:24.181347Z",
+     "start_time": "2022-11-30T22:00:24.179125Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# df_locks_miniaod_non_us.limit(5).toPandas()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "a49f41a1",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:00:25.125799Z",
+     "start_time": "2022-11-30T22:00:25.123836Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#df_locks_miniaod_us.filter(F.col(\"file_name\").contains(\"RunIISummer20UL18MiniAODv2\")).dropDuplicates([\"file_name\"]).groupby().sum(\"file_size\").show(20, False)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "3af9c7a4",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:00:26.146767Z",
+     "start_time": "2022-11-30T22:00:25.849703Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#Get file and block name maps\n",
+    "\n",
+    "df_file_block_map = spark.read.format('avro').load(HDFS_RUCIO_CONTENTS)\\\n",
+    "                    .filter(F.col('CHILD_TYPE')=='F')\\\n",
+    "                    .withColumnRenamed('NAME', 'block_name')\\\n",
+    "                    .withColumnRenamed('CHILD_NAME', 'file_name')\\\n",
+    "                    .select(['block_name', \"file_name\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "a25d7d12",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:00:28.757339Z",
+     "start_time": "2022-11-30T22:00:28.729797Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "df_blocks_miniaod_us = df_locks_miniaod_us.alias(\"mini_files\")\\\n",
+    "                                    .join(df_file_block_map.alias(\"file_block_map\"),\n",
+    "                                         F.col(\"mini_files.file_name\")==F.col(\"file_block_map.file_name\")\n",
+    "                                         )\\\n",
+    "                                    .withColumnRenamed('rse_name', 'us_disk_rse')\\\n",
+    "                                    .select([\"us_disk_rse\", \"mini_files.rse_id\", \"mini_files.file_name\", \"mini_files.file_size\", \"mini_files.rule\", \"file_block_map.block_name\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "81d71945",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:00:29.897531Z",
+     "start_time": "2022-11-30T22:00:28.970292Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "df_block_dataset_map = spark.read.format('avro').load(HDFS_RUCIO_CONTENTS)\\\n",
+    "                    .filter(F.col('CHILD_TYPE')=='D')\\\n",
+    "                    .withColumnRenamed('NAME', 'dataset_name')\\\n",
+    "                    .withColumnRenamed('CHILD_NAME', 'block_name')\\\n",
+    "                    .select(['dataset_name', \"block_name\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "77bfa233",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:00:32.892820Z",
+     "start_time": "2022-11-30T22:00:32.840483Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "\n",
+    "#group by campaign, tier etc\n",
+    "\n",
+    "df_miniaod_us_campaign = df_blocks_miniaod_us.na.fill(0)\\\n",
+    "                                    .withColumn('dataset_name', F.split(F.col('block_name'), '#').getItem(0))\\\n",
+    "                                    .withColumn('tier', F.split(F.col('dataset_name'), '/').getItem(3))\\\n",
+    "                                    .withColumn('brute_campaign', F.split(F.col('dataset_name'), '/').getItem(2))\\\n",
+    "                                    .withColumn('short_campaign', F.split(F.col('brute_campaign'), '-').getItem(0))\\\n",
+    "                                    .withColumn('campaign',\n",
+    "                                               F.when(F.col(\"tier\")==\"MINIAOD\", F.col(\"brute_campaign\"))\\\n",
+    "                                                .otherwise(F.col(\"short_campaign\"))\n",
+    "                                               )\\\n",
+    "                                    .dropDuplicates([\"file_name\"])\\\n",
+    "                                    .select([\"campaign\", \"file_name\", \"dataset_name\", \"file_size\"])\n",
+    "#                                     .withColumn(\"accessed_at_date\", F.from_unixtime(F.col('accessed_at')/1000).cast(T.DateType()))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "fdfd66f3",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:00:33.507502Z",
+     "start_time": "2022-11-30T22:00:33.491182Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "X = 30\n",
+    "top_X_campaigns = df_miniaod_us_campaign\\\n",
+    "             .groupby(['campaign'])\\\n",
+    "             .agg(F.sum(\"file_size\").alias(\"campaign_size\"))\\\n",
+    "             .sort(F.col(\"campaign_size\").desc())\\\n",
+    "             .limit(X)\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "914b1947",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:01:20.613944Z",
+     "start_time": "2022-11-30T22:00:34.561150Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "top_X_campaigns.show(X, False)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "0f76273a",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:01:45.121242Z",
+     "start_time": "2022-11-30T22:01:20.616061Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#get list of campaigns to create datasets analysis for them\n",
+    "#get size of each campaign\n",
+    "\n",
+    "temp_d = top_X_campaigns.toPandas().to_dict()\n",
+    "campaign_size_dict = {}\n",
+    "for i in range(X):\n",
+    "    campaign_size_dict[temp_d['campaign'][i]] = temp_d['campaign_size'][i]\n",
+    "    \n",
+    "campaigns_list = list(campaign_size_dict.keys())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "41e117cb",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:01:45.158919Z",
+     "start_time": "2022-11-30T22:01:45.124211Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "topX_campaign_files = top_X_campaigns.alias(\"topX\")\\\n",
+    "                        .join(\n",
+    "                            df_miniaod_us_campaign.alias(\"all\"),\n",
+    "                            F.col(\"topX.campaign\")==F.col(\"all.campaign\")\n",
+    "                        )\\\n",
+    "                        .select([\"topX.campaign\", \"campaign_size\", \"file_name\", \"dataset_name\", \"file_size\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "ed9f91ad",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:01:45.193257Z",
+     "start_time": "2022-11-30T22:01:45.162815Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "other_locked_replicas_for_topX = topX_campaign_files.alias(\"campaign_files\")\\\n",
+    "                            .join(\n",
+    "                                df_locks_miniaod_all.alias(\"replica\"),\n",
+    "                                F.col(\"campaign_files.file_name\")==F.col(\"replica.file_name\")\n",
+    "                            )\\\n",
+    "                            .select([\"campaign\", \"campaign_size\", \"dataset_name\", \"replica.file_size\", \"rse_name\"])\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "4c0880bd",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:01:45.238389Z",
+     "start_time": "2022-11-30T22:01:45.196748Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "non_us_disk_replicas_for_topX = topX_campaign_files.alias(\"campaign_files\")\\\n",
+    "                            .join(\n",
+    "                                df_locks_miniaod_non_us.alias(\"non_us_replica\"),\n",
+    "                                F.col(\"campaign_files.file_name\")==F.col(\"non_us_replica.file_name\")\n",
+    "                            )\\\n",
+    "                            .select([\"campaign\", \"campaign_size\", \"dataset_name\", \"non_us_replica.file_size\", \"rse_name\", \"non_us_replica.file_name\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "458ba190",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:01:45.352904Z",
+     "start_time": "2022-11-30T22:01:45.242994Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#Assumption - if a file from a dataset is on tape then other files of the datasets are also on tape\n",
+    "#Assumptioon: Datasets are fully replicated at US disk sites\n",
+    "\n",
+    "\n",
+    "us_dataset_file_count = topX_campaign_files\\\n",
+    "                            .dropDuplicates([\"file_name\"])\\\n",
+    "                            .groupby(\"dataset_name\")\\\n",
+    "                            .agg(\n",
+    "                                    F.count(F.col(\"file_name\")).alias(\"file_count_us\"),\n",
+    "                                    F.sum(\"file_size\").alias(\"dataset_size\")\n",
+    "                                )\n",
+    "\n",
+    "non_us_dataset_file_count = non_us_disk_replicas_for_topX\\\n",
+    "                            .dropDuplicates([\"file_name\"])\\\n",
+    "                            .groupby(\"dataset_name\")\\\n",
+    "                            .agg(F.count(F.col(\"file_name\")).alias(\"file_count_non_us\"))\n",
+    "\n",
+    "percent_locked_to_non_us_rses = us_dataset_file_count.alias(\"us_count\")\\\n",
+    "                                                    .join(\n",
+    "                                                            non_us_dataset_file_count.alias(\"non_us_count\"),\n",
+    "                                                            F.col(\"us_count.dataset_name\") == F.col(\"non_us_count.dataset_name\"),\n",
+    "                                                            \"left\"\n",
+    "                                                        )\\\n",
+    "                                                    .select([\"us_count.dataset_name\", \"file_count_us\", \"file_count_non_us\", \"us_count.dataset_size\"])\\\n",
+    "                                                    .na.fill(0)\\\n",
+    "                                                    .withColumn(\"percent_locked_other_sites\", 100*(F.col(\"file_count_non_us\")/F.col(\"file_count_us\")))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "48497694",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-29T08:31:01.709103Z",
+     "start_time": "2022-11-29T08:31:01.662729Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "3f19f0b4",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T22:15:59.638717Z",
+     "start_time": "2022-11-30T22:01:45.354489Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    " #insert different dataset name here\n",
+    "\n",
+    "\n",
+    "meta_df = {\n",
+    "    \"campaign\": [],\n",
+    "    \"campaign_size\": [],\n",
+    "    \"sum_dataset_sizes\": [],\n",
+    "    \"dataset_on_tape_size\": [],\n",
+    "    \"dataset_not_on_tape_size\" :[],\n",
+    "    \"total_dataset_count\": [],\n",
+    "    \"datasets_on_tape\": [],\n",
+    "    \"datasets_not_on_tape\": [],\n",
+    "    \"datasets_fully_replicated_at_other_disks\": []\n",
+    "}\n",
+    "\n",
+    "for campaign in campaigns_list:\n",
+    "    tape_replicas = other_locked_replicas_for_topX\\\n",
+    "                    .filter(F.col(\"campaign\")==campaign)\\\n",
+    "                    .groupby([\"dataset_name\"])\\\n",
+    "                    .agg(\n",
+    "                        F.sum(\"file_size\").alias(\"total_space_occupied\"),\n",
+    "                        F.collect_set(F.col(\"rse_name\")).alias(\"rse_set\")\n",
+    "                    )\\\n",
+    "                    .withColumn(\"rses\", F.concat_ws(\",\", F.col(\"rse_set\")))\\\n",
+    "                    .withColumn(\"on_tape\", F.col(\"rses\").contains(\"Tape\"))\\\n",
+    "                    .select([\"dataset_name\", \"total_space_occupied\", \"rses\", \"on_tape\"])\n",
+    "\n",
+    "\n",
+    "    tape_rep_dataset_size = tape_replicas.alias(\"tape_rep\")\\\n",
+    "                        .join(\n",
+    "                                percent_locked_to_non_us_rses.alias(\"dataset_size\"),\n",
+    "                                F.col(\"tape_rep.dataset_name\") == F.col(\"dataset_size.dataset_name\")\n",
+    "                             )\\\n",
+    "                        .select([\"tape_rep.dataset_name\", \"total_space_occupied\", \"rses\", \"on_tape\", \"dataset_size\", \"percent_locked_other_sites\"])\n",
+    "\n",
+    "\n",
+    "    pd_rep = tape_rep_dataset_size.toPandas()\n",
+    "\n",
+    "    meta_df['campaign'].append(campaign)\n",
+    "    meta_df['campaign_size'].append(campaign_size_dict[campaign])\n",
+    "    meta_df['total_dataset_count'].append(pd_rep.shape[0])\n",
+    "    meta_df['datasets_on_tape'].append(pd_rep[pd_rep.on_tape == True].shape[0])\n",
+    "    meta_df['datasets_not_on_tape'].append(pd_rep[pd_rep.on_tape != True].shape[0])\n",
+    "    meta_df['sum_dataset_sizes'].append(pd_rep.dataset_size.sum())\n",
+    "    meta_df['dataset_on_tape_size'].append(pd_rep[pd_rep.on_tape == True].dataset_size.sum())\n",
+    "    meta_df['dataset_not_on_tape_size'].append(pd_rep[pd_rep.on_tape != True].dataset_size.sum())\n",
+    "    meta_df['datasets_fully_replicated_at_other_disks'].append(pd_rep[pd_rep.percent_locked_other_sites == 100].shape[0])\n",
+    "\n",
+    "    pd_rep.to_csv(f\"Campaigns/{SITE}/{campaign}.csv\", index=False)\n",
+    "\n",
+    "pd_meta = pd.DataFrame.from_dict(meta_df)\n",
+    "pd_meta.to_csv(\"campaign_meta.csv\")\n",
+    "pd_meta.to_csv(f\"Campaigns/{SITE}/campaign_meta.csv\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "a9b24d2f",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T21:57:34.617981Z",
+     "start_time": "2022-11-30T21:57:34.617971Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#USpd_meta"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "b530b6c9",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-30T21:57:34.620071Z",
+     "start_time": "2022-11-30T21:57:34.620062Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#CERN\n",
+    "pd_meta"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "7c910e7b",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-29T07:53:36.734514Z",
+     "start_time": "2022-11-29T07:53:36.731764Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "\n",
+    "# df_replicas = spark.read.format('avro').load(HDFS_RUCIO_REPLICAS)\\\n",
+    "#                     .withColumn('rse_id', F.lower(F.hex(F.col('RSE_ID'))))\\\n",
+    "#                     .withColumnRenamed('NAME', 'file_name')\\\n",
+    "#                     .alias(\"replicas\")\\\n",
+    "#                     .join(\n",
+    "#                         df_rses.alias(\"rse_name\"),\n",
+    "#                         F.col(\"rse_name.rse_id\")==F.col(\"replicas.rse_id\")\n",
+    "#                     )\\\n",
+    "#                     .select(['replicas.rse_id',  'rse_name', 'file_name',])\n",
+    "\n",
+    "#Check the latest access for replica of miniaod(sim) in concern\n",
+    "#We are ignoring last access - so skip this\n",
+    "\n",
+    "# df_locked_miniaods_us_with_last_access = df_locks_miniaod_us.alias(\"mini_lock\")\\\n",
+    "#                                                             .join(df_replicas.alias(\"replicas\"),\n",
+    "#                                                                   [F.col(\"replicas.file_name\")==F.col(\"mini_lock.file_name\"), F.col(\"replicas.rse_id\")==F.col(\"mini_lock.rse_id\")]\n",
+    "#                                                                  )\\\n",
+    "#                                                             .select([\"mini_lock.rse_name\", \"mini_lock.rse_id\", \"mini_lock.file_name\", \"mini_lock.file_size\", \"mini_lock.rule\", \"replicas.accessed_at\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "1bce9e22",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-11-29T11:22:55.225019Z",
+     "start_time": "2022-11-29T11:22:55.216342Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "print(pd_meta.to_markdown(tablefmt=\"grid\"))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "5bbfc3d2",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "1937379375612216/1e12"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.9.12"
+  },
+  "sparkconnect": {
+   "bundled_options": [],
+   "list_of_options": [
+    {
+     "name": "spark.jars.packages",
+     "value": "org.apache.spark:spark-avro_2.12:3.2.1"
+    },
+    {
+     "name": "spark.executor.memory",
+     "value": "16g"
+    }
+   ]
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}

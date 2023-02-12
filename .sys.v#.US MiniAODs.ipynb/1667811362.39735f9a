@@ -1,0 +1,815 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "430a400b",
+   "metadata": {},
+   "source": [
+    "Let's review MINIAOD(SIM) usage on US disk sites (T1 and T2).\n",
+    "\n",
+    "We need a breakdown of\n",
+    "\n",
+    "Campaign name | size on US disks | last accessed\n",
+    "\n",
+    "After that, we can choose where to put the cut and lift the rules for unused or super old campaigns.\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 52,
+   "id": "47a93044",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-10-27T12:43:05.608877Z",
+     "start_time": "2022-10-27T12:43:05.598452Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#import\n",
+    "\n",
+    "from datetime import datetime\n",
+    "import pandas as pd\n",
+    "import pyspark.sql.functions as F\n",
+    "import pyspark.sql.types as T"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 53,
+   "id": "9561170c",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-10-27T12:43:05.769701Z",
+     "start_time": "2022-10-27T12:43:05.765266Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "TODAY = datetime.today().strftime('%Y-%m-%d')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 54,
+   "id": "81dbd2e0",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-10-27T12:43:07.111038Z",
+     "start_time": "2022-10-27T12:43:07.105124Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#pandas display settings\n",
+    "\n",
+    "pd.options.display.float_format = '{:,.2f}'.format\n",
+    "pd.set_option('display.max_colwidth', None)\n",
+    "pd.set_option('display.max_rows', None)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 55,
+   "id": "ca728d0e",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-10-27T12:43:07.309365Z",
+     "start_time": "2022-10-27T12:43:07.304115Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#HDFS import paths\n",
+    "\n",
+    "HDFS_RUCIO_CONTENTS = \"/project/awg/cms/rucio/{}/contents/part*.avro\".format(TODAY)\n",
+    "HDFS_RUCIO_REPLICAS = \"/project/awg/cms/rucio/{}/replicas/part*.avro\".format(TODAY)\n",
+    "HDFS_RUCIO_DIDS     = \"/project/awg/cms/rucio/{}/dids/part*.avro\".format(TODAY)\n",
+    "HDFS_RUCIO_LOCKS    = \"/project/awg/cms/rucio/{}/locks/part*.avro\".format(TODAY)\n",
+    "HDFS_RUCIO_RSES     = \"/project/awg/cms/rucio/{}/rses/part*.avro\".format(TODAY)\n",
+    "HDFS_RUCIO_RULES     = \"/project/awg/cms/rucio/{}/rules/part*.avro\".format(TODAY)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "262a9116",
+   "metadata": {},
+   "source": [
+    "Columns Used\n",
+    "\n",
+    "file_name, block_name, file_size, block_size, rse_name, rse_id, rule_id, datatier, campaign"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 56,
+   "id": "d7ba20fc",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-10-27T12:43:08.791484Z",
+     "start_time": "2022-10-27T12:43:08.785421Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "FILE_NAME = 'file_name'\n",
+    "BLOCK_NAME = 'block_name'\n",
+    "FILE_SIZE = 'file_size'\n",
+    "BLOCK_SIZE = 'block_size'\n",
+    "RSE_NAME = 'rse_name'\n",
+    "RSE_ID = 'rse_id'\n",
+    "RULE_ID = 'rule_id'\n",
+    "DATATIER = 'datatier'\n",
+    "CAMPAIGN = 'campaign'"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 59,
+   "id": "1c326978",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-10-27T12:44:23.193821Z",
+     "start_time": "2022-10-27T12:44:22.843136Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# Get the list of desired Rses - T1 and T2 Rses at US sites\n",
+    "\n",
+    "df_rses = spark.read.format('avro').load(HDFS_RUCIO_RSES)\\\n",
+    "    .withColumn('rse_id', F.lower(F.hex(F.col('ID'))))\\\n",
+    "    .withColumnRenamed('RSE', 'rse_name')\\\n",
+    "    .withColumnRenamed('RSE_TYPE', 'rse_type')\\\n",
+    "    .filter( \\\n",
+    "            ( ~ F.col('rse').contains(\"_Tape\") ) & \\\n",
+    "            ( ~ F.col('rse').contains(\"T3_\") ) & \\\n",
+    "            ( ~ F.col('rse').contains(\"_Test\") ) & \\\n",
+    "            ( ~ F.col('rse').contains(\"_Temp\") ) & \\\n",
+    "            ( ~ F.col('rse').contains(\"_Ceph\") ) &\\\n",
+    "            ( F.col('rse').contains(\"US\") ) \\\n",
+    "           )\\\n",
+    "    .select(['rse_name', 'rse_id', 'rse_type'])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 60,
+   "id": "c9a615fe",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-10-27T12:44:32.279232Z",
+     "start_time": "2022-10-27T12:44:31.890680Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# MINIAOD(SIM) files with locks\n",
+    "\n",
+    "df_locks = spark.read.format('avro').load(HDFS_RUCIO_LOCKS) \\\n",
+    "    .filter(F.col(\"STATE\") == 'O') \\\n",
+    "    .withColumnRenamed(\"NAME\", \"file_name\") \\\n",
+    "    .withColumn('file_size', F.col('BYTES').cast(T.LongType())) \\\n",
+    "    .withColumn('rule', F.lower(F.hex(F.col('RULE_ID')))) \\\n",
+    "    .withColumn('rse_id', F.lower(F.hex(F.col('RSE_ID')))) \\\n",
+    "    .select([\"file_name\", \"file_size\", \"rule\", \"rse_id\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 64,
+   "id": "a3ff494e",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-10-27T12:46:36.288285Z",
+     "start_time": "2022-10-27T12:46:35.619043Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#Check the latest access for replica of miniaod(sim) in concern\n",
+    "\n",
+    "df_replicas = spark.read.format('avro').load(HDFS_RUCIO_REPLICAS)\\\n",
+    "                    .withColumn('rse_id', F.lower(F.hex(F.col('RSE_ID'))))\\\n",
+    "                    .withColumnRenamed('NAME', 'file_name')\\\n",
+    "                    .select(['rse_id', 'file_name', 'accessed_at'])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 65,
+   "id": "143da9c8",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-10-27T12:50:41.172688Z",
+     "start_time": "2022-10-27T12:50:40.610087Z"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+--------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------+-----------+\n",
+      "|rse_id                          |file_name                                                                                                                                             |accessed_at|\n",
+      "+--------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------+-----------+\n",
+      "|f44c866a264d4da9972969e9f3b5bb52|/store/mc/RunIIFall17GS/QCD_Pt_170to300_TuneCP5_13TeV_pythia8/GEN-SIM/93X_mc2017_realistic_v3_ext1-v2/410002/96AD4E9A-EE9A-E811-B26F-AC1F6B0F757C.root|null       |\n",
+      "+--------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------+-----------+\n",
+      "only showing top 1 row\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "df_replicas.show(1, False)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 40,
+   "id": "3af9c7a4",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-10-27T10:43:45.104215Z",
+     "start_time": "2022-10-27T10:43:44.326625Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#Get file and block name maps\n",
+    "\n",
+    "df_contents = spark.read.format('avro').load(HDFS_RUCIO_CONTENTS)\\\n",
+    "                    .filter(F.col('CHILD_TYPE')=='F')\\\n",
+    "                    .withColumnRenamed('NAME', 'block_name')\\\n",
+    "                    .withColumnRenamed('CHILD_NAME', 'file_name')\\\n",
+    "                    .select(['block_name', \"file_name\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "ce09e19c",
+   "metadata": {
+    "ExecuteTime": {
+     "start_time": "2022-10-27T12:42:44.370Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "df_locks_miniaod = df_locks.filter(F.col('file_name').contains('MINIAOD')) "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 21,
+   "id": "c9c0a802",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-10-27T10:11:00.171424Z",
+     "start_time": "2022-10-27T10:10:59.614905Z"
+    }
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>f_name</th>\n",
+       "      <th>f_size</th>\n",
+       "      <th>lock_rule</th>\n",
+       "      <th>lock_rse_id</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>/store/mc/RunIISummer20UL17MiniAODv2/ZLLGJets_MonoPhoton_MLL-4to30_PtG-15to130_TuneCP5_13TeV-amcatnloFXFX-pythia8/MINIAODSIM/106X_mc2017_realistic_v9-v2/2520000/516870D5-1E71-D34F-9E4E-D834C5687AAD.root</td>\n",
+       "      <td>2534772263</td>\n",
+       "      <td>0e91bccd10ee44a4b850793ad27f92d6</td>\n",
+       "      <td>087ee3383b9d45f6b31814af07b2c56d</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>/store/mc/RunIISummer20UL16MiniAODv2/BdToJpsiKstar_BMuonFilter_SoftQCDnonD_TuneCP5_13TeV-pythia8-evtgen/MINIAODSIM/106X_mcRun2_asymptotic_v17_ext1-v2/2430000/843DDCB6-2F03-3443-8D93-834BECDED828.root</td>\n",
+       "      <td>3777341936</td>\n",
+       "      <td>ea862a4868fb4f10a2312ee521962af2</td>\n",
+       "      <td>9cab8c2f425b4de8ba03a4f430722ffc</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>/store/mc/RunIISummer20UL17MiniAOD/TTToSemiLeptonic_TuneCP5up_13TeV-powheg-pythia8/MINIAODSIM/106X_mc2017_realistic_v6-v2/120000/E7DB7788-24CC-3D40-B5F1-9B307F9D835C.root</td>\n",
+       "      <td>4089853207</td>\n",
+       "      <td>e608c12a42e2491d83a9536955ec8246</td>\n",
+       "      <td>a6981dee6ed14b7c8c1b0e9fe7644401</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>/store/mc/RunIISummer20UL17MiniAOD/ZToJPsiG_JPsiToMuMu_TuneCP5_13TeV-madgraph-pythia8/MINIAODSIM/106X_mc2017_realistic_v6-v2/120000/5D9DFF09-B97C-7E47-9B67-9AECB12C230E.root</td>\n",
+       "      <td>3744030645</td>\n",
+       "      <td>e56c28dbd89242c68d30f9d92457ee98</td>\n",
+       "      <td>087ee3383b9d45f6b31814af07b2c56d</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>/store/data/Run2018D/EGamma/MINIAOD/12Nov2019_UL2018-v8/280002/E3BADDD4-2AA1-934F-BCC0-D614904D81FC.root</td>\n",
+       "      <td>4227918601</td>\n",
+       "      <td>3161d8d6579c4a4e8f74f22f74a459e2</td>\n",
+       "      <td>087ee3383b9d45f6b31814af07b2c56d</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "                                                                                                                                                                                                       f_name  \\\n",
+       "0  /store/mc/RunIISummer20UL17MiniAODv2/ZLLGJets_MonoPhoton_MLL-4to30_PtG-15to130_TuneCP5_13TeV-amcatnloFXFX-pythia8/MINIAODSIM/106X_mc2017_realistic_v9-v2/2520000/516870D5-1E71-D34F-9E4E-D834C5687AAD.root   \n",
+       "1     /store/mc/RunIISummer20UL16MiniAODv2/BdToJpsiKstar_BMuonFilter_SoftQCDnonD_TuneCP5_13TeV-pythia8-evtgen/MINIAODSIM/106X_mcRun2_asymptotic_v17_ext1-v2/2430000/843DDCB6-2F03-3443-8D93-834BECDED828.root   \n",
+       "2                                  /store/mc/RunIISummer20UL17MiniAOD/TTToSemiLeptonic_TuneCP5up_13TeV-powheg-pythia8/MINIAODSIM/106X_mc2017_realistic_v6-v2/120000/E7DB7788-24CC-3D40-B5F1-9B307F9D835C.root   \n",
+       "3                               /store/mc/RunIISummer20UL17MiniAOD/ZToJPsiG_JPsiToMuMu_TuneCP5_13TeV-madgraph-pythia8/MINIAODSIM/106X_mc2017_realistic_v6-v2/120000/5D9DFF09-B97C-7E47-9B67-9AECB12C230E.root   \n",
+       "4                                                                                                    /store/data/Run2018D/EGamma/MINIAOD/12Nov2019_UL2018-v8/280002/E3BADDD4-2AA1-934F-BCC0-D614904D81FC.root   \n",
+       "\n",
+       "       f_size                         lock_rule  \\\n",
+       "0  2534772263  0e91bccd10ee44a4b850793ad27f92d6   \n",
+       "1  3777341936  ea862a4868fb4f10a2312ee521962af2   \n",
+       "2  4089853207  e608c12a42e2491d83a9536955ec8246   \n",
+       "3  3744030645  e56c28dbd89242c68d30f9d92457ee98   \n",
+       "4  4227918601  3161d8d6579c4a4e8f74f22f74a459e2   \n",
+       "\n",
+       "                        lock_rse_id  \n",
+       "0  087ee3383b9d45f6b31814af07b2c56d  \n",
+       "1  9cab8c2f425b4de8ba03a4f430722ffc  \n",
+       "2  a6981dee6ed14b7c8c1b0e9fe7644401  \n",
+       "3  087ee3383b9d45f6b31814af07b2c56d  \n",
+       "4  087ee3383b9d45f6b31814af07b2c56d  "
+      ]
+     },
+     "execution_count": 21,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "df_locks_miniaod.limit(5).toPandas()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 43,
+   "id": "9e156d7e",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-10-27T10:53:18.464696Z",
+     "start_time": "2022-10-27T10:53:18.292074Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "df_locked_files_miniaod_us = df_rses.join(df_locks_miniaod, F.col(\"rse_id\") == F.col(\"lock_rse_id\"))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 45,
+   "id": "4aa6039a",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-10-27T10:53:27.961579Z",
+     "start_time": "2022-10-27T10:53:27.923627Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "df_locked_blocks_miniaod_us = df_locked_files_miniaod_us.join(df_contents, F.col(\"f_name\")==F.col(\"file_name\"))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 46,
+   "id": "63bc0ba9",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2022-10-27T10:55:09.025188Z",
+     "start_time": "2022-10-27T10:53:39.579084Z"
+    },
+    "collapsed": true
+   },
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "22/10/27 12:55:07 WARN BlockManagerMaster: Failed to remove broadcast 48 with removeFromMaster = true - org.apache.spark.SparkException: Could not find BlockManagerEndpoint1.\n",
+      "\tat org.apache.spark.rpc.netty.Dispatcher.postMessage(Dispatcher.scala:178)\n",
+      "\tat org.apache.spark.rpc.netty.Dispatcher.postRemoteMessage(Dispatcher.scala:136)\n",
+      "\tat org.apache.spark.rpc.netty.NettyRpcHandler.receive(NettyRpcEnv.scala:684)\n",
+      "\tat org.apache.spark.network.server.TransportRequestHandler.processRpcRequest(TransportRequestHandler.java:163)\n",
+      "\tat org.apache.spark.network.server.TransportRequestHandler.handle(TransportRequestHandler.java:109)\n",
+      "\tat org.apache.spark.network.server.TransportChannelHandler.channelRead0(TransportChannelHandler.java:140)\n",
+      "\tat org.apache.spark.network.server.TransportChannelHandler.channelRead0(TransportChannelHandler.java:53)\n",
+      "\tat io.netty.channel.SimpleChannelInboundHandler.channelRead(SimpleChannelInboundHandler.java:99)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat io.netty.handler.timeout.IdleStateHandler.channelRead(IdleStateHandler.java:286)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:103)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat org.apache.spark.network.util.TransportFrameDecoder.channelRead(TransportFrameDecoder.java:102)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1410)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:919)\n",
+      "\tat io.netty.channel.nio.AbstractNioByteChannel$NioByteUnsafe.read(AbstractNioByteChannel.java:166)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:719)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:655)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:581)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:493)\n",
+      "\tat io.netty.util.concurrent.SingleThreadEventExecutor$4.run(SingleThreadEventExecutor.java:986)\n",
+      "\tat io.netty.util.internal.ThreadExecutorMap$2.run(ThreadExecutorMap.java:74)\n",
+      "\tat io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)\n",
+      "\tat java.lang.Thread.run(Thread.java:748)\n",
+      "\n",
+      "java.lang.RuntimeException: org.apache.spark.SparkException: Could not find BlockManagerEndpoint1.\n",
+      "\tat org.apache.spark.rpc.netty.Dispatcher.postMessage(Dispatcher.scala:178)\n",
+      "\tat org.apache.spark.rpc.netty.Dispatcher.postRemoteMessage(Dispatcher.scala:136)\n",
+      "\tat org.apache.spark.rpc.netty.NettyRpcHandler.receive(NettyRpcEnv.scala:684)\n",
+      "\tat org.apache.spark.network.server.TransportRequestHandler.processRpcRequest(TransportRequestHandler.java:163)\n",
+      "\tat org.apache.spark.network.server.TransportRequestHandler.handle(TransportRequestHandler.java:109)\n",
+      "\tat org.apache.spark.network.server.TransportChannelHandler.channelRead0(TransportChannelHandler.java:140)\n",
+      "\tat org.apache.spark.network.server.TransportChannelHandler.channelRead0(TransportChannelHandler.java:53)\n",
+      "\tat io.netty.channel.SimpleChannelInboundHandler.channelRead(SimpleChannelInboundHandler.java:99)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat io.netty.handler.timeout.IdleStateHandler.channelRead(IdleStateHandler.java:286)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:103)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat org.apache.spark.network.util.TransportFrameDecoder.channelRead(TransportFrameDecoder.java:102)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1410)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:919)\n",
+      "\tat io.netty.channel.nio.AbstractNioByteChannel$NioByteUnsafe.read(AbstractNioByteChannel.java:166)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:719)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:655)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:581)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:493)\n",
+      "\tat io.netty.util.concurrent.SingleThreadEventExecutor$4.run(SingleThreadEventExecutor.java:986)\n",
+      "\tat io.netty.util.internal.ThreadExecutorMap$2.run(ThreadExecutorMap.java:74)\n",
+      "\tat io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)\n",
+      "\tat java.lang.Thread.run(Thread.java:748)\n",
+      "\n",
+      "\tat org.apache.spark.network.client.TransportResponseHandler.handle(TransportResponseHandler.java:209)\n",
+      "\tat org.apache.spark.network.server.TransportChannelHandler.channelRead0(TransportChannelHandler.java:142)\n",
+      "\tat org.apache.spark.network.server.TransportChannelHandler.channelRead0(TransportChannelHandler.java:53)\n",
+      "\tat io.netty.channel.SimpleChannelInboundHandler.channelRead(SimpleChannelInboundHandler.java:99)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat io.netty.handler.timeout.IdleStateHandler.channelRead(IdleStateHandler.java:286)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:103)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat org.apache.spark.network.util.TransportFrameDecoder.channelRead(TransportFrameDecoder.java:102)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1410)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:919)\n",
+      "\tat io.netty.channel.nio.AbstractNioByteChannel$NioByteUnsafe.read(AbstractNioByteChannel.java:166)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:719)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:655)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:581)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:493)\n",
+      "\tat io.netty.util.concurrent.SingleThreadEventExecutor$4.run(SingleThreadEventExecutor.java:986)\n",
+      "\tat io.netty.util.internal.ThreadExecutorMap$2.run(ThreadExecutorMap.java:74)\n",
+      "\tat io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)\n",
+      "\tat java.base/java.lang.Thread.run(Thread.java:829)\n",
+      "22/10/27 12:55:07 ERROR ContextCleaner: Error cleaning broadcast 48\n",
+      "org.apache.spark.SparkException: Exception thrown in awaitResult: \n",
+      "\tat org.apache.spark.util.ThreadUtils$.awaitResult(ThreadUtils.scala:301)\n",
+      "\tat org.apache.spark.rpc.RpcTimeout.awaitResult(RpcTimeout.scala:75)\n",
+      "\tat org.apache.spark.storage.BlockManagerMaster.removeBroadcast(BlockManagerMaster.scala:194)\n",
+      "\tat org.apache.spark.broadcast.TorrentBroadcast$.unpersist(TorrentBroadcast.scala:351)\n",
+      "\tat org.apache.spark.broadcast.TorrentBroadcastFactory.unbroadcast(TorrentBroadcastFactory.scala:45)\n",
+      "\tat org.apache.spark.broadcast.BroadcastManager.unbroadcast(BroadcastManager.scala:78)\n",
+      "\tat org.apache.spark.ContextCleaner.doCleanupBroadcast(ContextCleaner.scala:254)\n",
+      "\tat org.apache.spark.ContextCleaner.$anonfun$keepCleaning$3(ContextCleaner.scala:204)\n",
+      "\tat org.apache.spark.ContextCleaner.$anonfun$keepCleaning$3$adapted(ContextCleaner.scala:195)\n",
+      "\tat scala.Option.foreach(Option.scala:407)\n",
+      "\tat org.apache.spark.ContextCleaner.$anonfun$keepCleaning$1(ContextCleaner.scala:195)\n",
+      "\tat org.apache.spark.util.Utils$.tryOrStopSparkContext(Utils.scala:1404)\n",
+      "\tat org.apache.spark.ContextCleaner.org$apache$spark$ContextCleaner$$keepCleaning(ContextCleaner.scala:189)\n",
+      "\tat org.apache.spark.ContextCleaner$$anon$1.run(ContextCleaner.scala:79)\n",
+      "Caused by: java.lang.RuntimeException: org.apache.spark.SparkException: Could not find BlockManagerEndpoint1.\n",
+      "\tat org.apache.spark.rpc.netty.Dispatcher.postMessage(Dispatcher.scala:178)\n",
+      "\tat org.apache.spark.rpc.netty.Dispatcher.postRemoteMessage(Dispatcher.scala:136)\n",
+      "\tat org.apache.spark.rpc.netty.NettyRpcHandler.receive(NettyRpcEnv.scala:684)\n",
+      "\tat org.apache.spark.network.server.TransportRequestHandler.processRpcRequest(TransportRequestHandler.java:163)\n",
+      "\tat org.apache.spark.network.server.TransportRequestHandler.handle(TransportRequestHandler.java:109)\n",
+      "\tat org.apache.spark.network.server.TransportChannelHandler.channelRead0(TransportChannelHandler.java:140)\n",
+      "\tat org.apache.spark.network.server.TransportChannelHandler.channelRead0(TransportChannelHandler.java:53)\n",
+      "\tat io.netty.channel.SimpleChannelInboundHandler.channelRead(SimpleChannelInboundHandler.java:99)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat io.netty.handler.timeout.IdleStateHandler.channelRead(IdleStateHandler.java:286)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:103)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat org.apache.spark.network.util.TransportFrameDecoder.channelRead(TransportFrameDecoder.java:102)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1410)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:919)\n",
+      "\tat io.netty.channel.nio.AbstractNioByteChannel$NioByteUnsafe.read(AbstractNioByteChannel.java:166)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:719)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:655)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:581)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:493)\n",
+      "\tat io.netty.util.concurrent.SingleThreadEventExecutor$4.run(SingleThreadEventExecutor.java:986)\n",
+      "\tat io.netty.util.internal.ThreadExecutorMap$2.run(ThreadExecutorMap.java:74)\n",
+      "\tat io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)\n",
+      "\tat java.lang.Thread.run(Thread.java:748)\n",
+      "\n",
+      "\tat org.apache.spark.network.client.TransportResponseHandler.handle(TransportResponseHandler.java:209)\n",
+      "\tat org.apache.spark.network.server.TransportChannelHandler.channelRead0(TransportChannelHandler.java:142)\n",
+      "\tat org.apache.spark.network.server.TransportChannelHandler.channelRead0(TransportChannelHandler.java:53)\n",
+      "\tat io.netty.channel.SimpleChannelInboundHandler.channelRead(SimpleChannelInboundHandler.java:99)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat io.netty.handler.timeout.IdleStateHandler.channelRead(IdleStateHandler.java:286)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:103)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat org.apache.spark.network.util.TransportFrameDecoder.channelRead(TransportFrameDecoder.java:102)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)\n",
+      "\tat io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1410)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)\n",
+      "\tat io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:365)\n",
+      "\tat io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:919)\n",
+      "\tat io.netty.channel.nio.AbstractNioByteChannel$NioByteUnsafe.read(AbstractNioByteChannel.java:166)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:719)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:655)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:581)\n",
+      "\tat io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:493)\n",
+      "\tat io.netty.util.concurrent.SingleThreadEventExecutor$4.run(SingleThreadEventExecutor.java:986)\n",
+      "\tat io.netty.util.internal.ThreadExecutorMap$2.run(ThreadExecutorMap.java:74)\n",
+      "\tat io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)\n",
+      "\tat java.base/java.lang.Thread.run(Thread.java:829)\n"
+     ]
+    },
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>rse_name</th>\n",
+       "      <th>rse_id</th>\n",
+       "      <th>rse_type</th>\n",
+       "      <th>f_name</th>\n",
+       "      <th>f_size</th>\n",
+       "      <th>lock_rule</th>\n",
+       "      <th>lock_rse_id</th>\n",
+       "      <th>block_name</th>\n",
+       "      <th>file_name</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>T1_US_FNAL_Disk</td>\n",
+       "      <td>087ee3383b9d45f6b31814af07b2c56d</td>\n",
+       "      <td>DISK</td>\n",
+       "      <td>/store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent110_Validation_TEST_Alan_v11-v11/00000/1E993E2D-11ED-E611-8F33-0CC47A4D768C.root</td>\n",
+       "      <td>1448124899</td>\n",
+       "      <td>daf4b2450a594426a4651f00db8e7dba</td>\n",
+       "      <td>087ee3383b9d45f6b31814af07b2c56d</td>\n",
+       "      <td>/SingleElectron/CMSSW_7_4_0-MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent110_Validation_TEST_Alan_v11-v11/MINIAOD#3a1e12b0-ed9b-11e6-a882-02163e00ed6f</td>\n",
+       "      <td>/store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent110_Validation_TEST_Alan_v11-v11/00000/1E993E2D-11ED-E611-8F33-0CC47A4D768C.root</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>T1_US_FNAL_Disk</td>\n",
+       "      <td>087ee3383b9d45f6b31814af07b2c56d</td>\n",
+       "      <td>DISK</td>\n",
+       "      <td>/store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent1120_Validation_TEST_Alan_v13-v11/00000/3CFE037E-B02F-E911-BBFE-0CC47A7C360E.root</td>\n",
+       "      <td>883993314</td>\n",
+       "      <td>67c8db2eca7e4e1392aa4856a69640fb</td>\n",
+       "      <td>087ee3383b9d45f6b31814af07b2c56d</td>\n",
+       "      <td>/SingleElectron/CMSSW_7_4_0-MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent1120_Validation_TEST_Alan_v13-v11/MINIAOD#9dbbfa92-aae0-4b11-b8c2-9f59ffb5687c</td>\n",
+       "      <td>/store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent1120_Validation_TEST_Alan_v13-v11/00000/3CFE037E-B02F-E911-BBFE-0CC47A7C360E.root</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>T1_US_FNAL_Disk</td>\n",
+       "      <td>087ee3383b9d45f6b31814af07b2c56d</td>\n",
+       "      <td>DISK</td>\n",
+       "      <td>/store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent112_Validation_TEST_Alan_v1-v11/00000/CA7E7C75-D51A-E711-9818-0025905B85C0.root</td>\n",
+       "      <td>2274297702</td>\n",
+       "      <td>1add15685f4e42cf8a23169b280c8acc</td>\n",
+       "      <td>087ee3383b9d45f6b31814af07b2c56d</td>\n",
+       "      <td>/SingleElectron/CMSSW_7_4_0-MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent112_Validation_TEST_Alan_v1-v11/MINIAOD#7c1c4a10-1afa-11e7-bdaa-02163e00ed6f</td>\n",
+       "      <td>/store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent112_Validation_TEST_Alan_v1-v11/00000/CA7E7C75-D51A-E711-9818-0025905B85C0.root</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>T1_US_FNAL_Disk</td>\n",
+       "      <td>087ee3383b9d45f6b31814af07b2c56d</td>\n",
+       "      <td>DISK</td>\n",
+       "      <td>/store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent112_Validation_TEST_Alan_v52-v11/00000/08B27F9B-AB22-E711-A343-0CC47A4D7616.root</td>\n",
+       "      <td>2141263873</td>\n",
+       "      <td>2c396435e4c9421cb24afc526018f37a</td>\n",
+       "      <td>087ee3383b9d45f6b31814af07b2c56d</td>\n",
+       "      <td>/SingleElectron/CMSSW_7_4_0-MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent112_Validation_TEST_Alan_v52-v11/MINIAOD#02d1a9d4-22d4-11e7-b937-02163e006e3e</td>\n",
+       "      <td>/store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent112_Validation_TEST_Alan_v52-v11/00000/08B27F9B-AB22-E711-A343-0CC47A4D7616.root</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>T1_US_FNAL_Disk</td>\n",
+       "      <td>087ee3383b9d45f6b31814af07b2c56d</td>\n",
+       "      <td>DISK</td>\n",
+       "      <td>/store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent114_Validation_TEST_Alan_v14-v11/00000/D0487AE1-AA56-E711-81D7-0CC47A4C8E70.root</td>\n",
+       "      <td>2315079405</td>\n",
+       "      <td>a3f4d3445b684de1a6ff3f54be8a2a3d</td>\n",
+       "      <td>087ee3383b9d45f6b31814af07b2c56d</td>\n",
+       "      <td>/SingleElectron/CMSSW_7_4_0-MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent114_Validation_TEST_Alan_v14-v11/MINIAOD#668285c6-56db-11e7-b82e-02163e00ed6f</td>\n",
+       "      <td>/store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent114_Validation_TEST_Alan_v14-v11/00000/D0487AE1-AA56-E711-81D7-0CC47A4C8E70.root</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "          rse_name                            rse_id rse_type  \\\n",
+       "0  T1_US_FNAL_Disk  087ee3383b9d45f6b31814af07b2c56d     DISK   \n",
+       "1  T1_US_FNAL_Disk  087ee3383b9d45f6b31814af07b2c56d     DISK   \n",
+       "2  T1_US_FNAL_Disk  087ee3383b9d45f6b31814af07b2c56d     DISK   \n",
+       "3  T1_US_FNAL_Disk  087ee3383b9d45f6b31814af07b2c56d     DISK   \n",
+       "4  T1_US_FNAL_Disk  087ee3383b9d45f6b31814af07b2c56d     DISK   \n",
+       "\n",
+       "                                                                                                                                                                                 f_name  \\\n",
+       "0   /store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent110_Validation_TEST_Alan_v11-v11/00000/1E993E2D-11ED-E611-8F33-0CC47A4D768C.root   \n",
+       "1  /store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent1120_Validation_TEST_Alan_v13-v11/00000/3CFE037E-B02F-E911-BBFE-0CC47A7C360E.root   \n",
+       "2    /store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent112_Validation_TEST_Alan_v1-v11/00000/CA7E7C75-D51A-E711-9818-0025905B85C0.root   \n",
+       "3   /store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent112_Validation_TEST_Alan_v52-v11/00000/08B27F9B-AB22-E711-A343-0CC47A4D7616.root   \n",
+       "4   /store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent114_Validation_TEST_Alan_v14-v11/00000/D0487AE1-AA56-E711-81D7-0CC47A4C8E70.root   \n",
+       "\n",
+       "       f_size                         lock_rule  \\\n",
+       "0  1448124899  daf4b2450a594426a4651f00db8e7dba   \n",
+       "1   883993314  67c8db2eca7e4e1392aa4856a69640fb   \n",
+       "2  2274297702  1add15685f4e42cf8a23169b280c8acc   \n",
+       "3  2141263873  2c396435e4c9421cb24afc526018f37a   \n",
+       "4  2315079405  a3f4d3445b684de1a6ff3f54be8a2a3d   \n",
+       "\n",
+       "                        lock_rse_id  \\\n",
+       "0  087ee3383b9d45f6b31814af07b2c56d   \n",
+       "1  087ee3383b9d45f6b31814af07b2c56d   \n",
+       "2  087ee3383b9d45f6b31814af07b2c56d   \n",
+       "3  087ee3383b9d45f6b31814af07b2c56d   \n",
+       "4  087ee3383b9d45f6b31814af07b2c56d   \n",
+       "\n",
+       "                                                                                                                                                 block_name  \\\n",
+       "0   /SingleElectron/CMSSW_7_4_0-MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent110_Validation_TEST_Alan_v11-v11/MINIAOD#3a1e12b0-ed9b-11e6-a882-02163e00ed6f   \n",
+       "1  /SingleElectron/CMSSW_7_4_0-MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent1120_Validation_TEST_Alan_v13-v11/MINIAOD#9dbbfa92-aae0-4b11-b8c2-9f59ffb5687c   \n",
+       "2    /SingleElectron/CMSSW_7_4_0-MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent112_Validation_TEST_Alan_v1-v11/MINIAOD#7c1c4a10-1afa-11e7-bdaa-02163e00ed6f   \n",
+       "3   /SingleElectron/CMSSW_7_4_0-MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent112_Validation_TEST_Alan_v52-v11/MINIAOD#02d1a9d4-22d4-11e7-b937-02163e006e3e   \n",
+       "4   /SingleElectron/CMSSW_7_4_0-MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent114_Validation_TEST_Alan_v14-v11/MINIAOD#668285c6-56db-11e7-b82e-02163e00ed6f   \n",
+       "\n",
+       "                                                                                                                                                                              file_name  \n",
+       "0   /store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent110_Validation_TEST_Alan_v11-v11/00000/1E993E2D-11ED-E611-8F33-0CC47A4D768C.root  \n",
+       "1  /store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent1120_Validation_TEST_Alan_v13-v11/00000/3CFE037E-B02F-E911-BBFE-0CC47A7C360E.root  \n",
+       "2    /store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent112_Validation_TEST_Alan_v1-v11/00000/CA7E7C75-D51A-E711-9818-0025905B85C0.root  \n",
+       "3   /store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent112_Validation_TEST_Alan_v52-v11/00000/08B27F9B-AB22-E711-A343-0CC47A4D7616.root  \n",
+       "4   /store/backfill/1/CMSSW_7_4_0/SingleElectron/MINIAOD/MINIAODDreHLT_TaskChain_RelVal_Multicore_Agent114_Validation_TEST_Alan_v14-v11/00000/D0487AE1-AA56-E711-81D7-0CC47A4C8E70.root  "
+      ]
+     },
+     "execution_count": 46,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "df_locked_blocks_miniaod_us.limit(5).toPandas()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "77bfa233",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "#group by these campaign, tier etc\n",
+    "\n",
+    "df['container'] = df['dataset'].str.split(expand = True, pat='#')[0] \n",
+    "df['tier'] = df['container'].str.split(expand = True, pat='/')[3] \n",
+    "df['brute_campaign'] = df['container'].str.split(expand = True, pat='/')[2] \n",
+    "df['campaign'] = df['brute_campaign'].str.split(expand = True, pat='-')[0]"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.9.12"
+  },
+  "sparkconnect": {
+   "bundled_options": [],
+   "list_of_options": [
+    {
+     "name": "spark.jars.packages",
+     "value": "org.apache.spark:spark-avro_2.12:3.2.1"
+    },
+    {
+     "name": "spark.executor.memory",
+     "value": "16g"
+    }
+   ]
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}

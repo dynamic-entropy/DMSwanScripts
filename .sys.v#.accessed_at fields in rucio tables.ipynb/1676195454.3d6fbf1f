@@ -1,0 +1,304 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 15,
+   "id": "72ca90b1",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-12T07:38:40.114372Z",
+     "start_time": "2023-02-12T07:38:40.102658Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "import pyspark.sql.functions as F\n",
+    "import pyspark.sql.types as T\n",
+    "\n",
+    "from datetime import datetime, timedelta"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 17,
+   "id": "5118b6af",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-12T07:38:40.614850Z",
+     "start_time": "2023-02-12T07:38:40.607973Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "TODAY = (datetime.today() - timedelta(days=0)).strftime('%Y-%m-%d')\n",
+    "\n",
+    "HDFS_RUCIO_REPLICAS = f'/project/awg/cms/rucio/{TODAY}/replicas/part*.avro'\n",
+    "HDFS_RUCIO_DIDS = f'/project/awg/cms/rucio/{TODAY}/dids/part*.avro'\n",
+    "\n",
+    "INT_MAX = 2147483647000"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 18,
+   "id": "18432ec1",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-12T07:38:41.654854Z",
+     "start_time": "2023-02-12T07:38:41.644139Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "def get_df_replicas(spark):\n",
+    "    return spark.read.format('avro').load(HDFS_RUCIO_REPLICAS) \\\n",
+    "        .filter(F.col('scope') == 'cms') \\\n",
+    "        .withColumnRenamed('NAME', 'file_name') \\\n",
+    "        .withColumnRenamed('ACCESSED_AT', 'rep_accessed_at') \\\n",
+    "        .groupby(\"file_name\").agg(F.max(\"rep_accessed_at\").alias(\"max_rep_accessed_at\"))\\\n",
+    "        .select(['file_name', 'max_rep_accessed_at'])\n",
+    "\n",
+    "\n",
+    "def get_df_dids_files(spark):\n",
+    "    return spark.read.format('avro').load(HDFS_RUCIO_DIDS) \\\n",
+    "        .filter(F.col('DELETED_AT').isNull()) \\\n",
+    "        .filter(F.col('HIDDEN') == '0') \\\n",
+    "        .filter(F.col('SCOPE') == 'cms') \\\n",
+    "        .filter(F.col('DID_TYPE') == 'F') \\\n",
+    "        .withColumnRenamed('NAME', 'file_name') \\\n",
+    "        .withColumnRenamed('ACCESSED_AT', 'dids_accessed_at') \\\n",
+    "        .select(['file_name', 'dids_accessed_at'])\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 60,
+   "id": "6c702043",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-12T09:38:02.500950Z",
+     "start_time": "2023-02-12T09:38:00.925436Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "df_replicas = get_df_replicas(spark)\n",
+    "df_dids = get_df_dids_files(spark)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 61,
+   "id": "a74309a0",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-12T09:39:09.066770Z",
+     "start_time": "2023-02-12T09:38:02.503746Z"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "23/02/12 10:39:06 WARN YarnSchedulerBackend$YarnSchedulerEndpoint: Requesting driver to remove executor 207 for reason Container from a bad node: container_e159_1675935906795_4399_01_000252 on host: ithdp3101.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:05.855]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:05.915]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:05.917]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:06 ERROR YarnScheduler: Lost executor 207 on ithdp3101.cern.ch: Container from a bad node: container_e159_1675935906795_4399_01_000252 on host: ithdp3101.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:05.855]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:05.915]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:05.917]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:06 WARN TaskSetManager: Lost task 78.0 in stage 84.0 (TID 2918) (ithdp3101.cern.ch executor 207): ExecutorLostFailure (executor 207 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000252 on host: ithdp3101.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:05.855]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:05.915]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:05.917]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:06 WARN TaskSetManager: Lost task 77.0 in stage 84.0 (TID 2917) (ithdp3101.cern.ch executor 207): ExecutorLostFailure (executor 207 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000252 on host: ithdp3101.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:05.855]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:05.915]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:05.917]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:06 WARN TaskSetManager: Lost task 76.0 in stage 84.0 (TID 2916) (ithdp3101.cern.ch executor 207): ExecutorLostFailure (executor 207 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000252 on host: ithdp3101.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:05.855]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:05.915]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:05.917]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:06 WARN TaskSetManager: Lost task 79.0 in stage 84.0 (TID 2919) (ithdp3101.cern.ch executor 207): ExecutorLostFailure (executor 207 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000252 on host: ithdp3101.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:05.855]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:05.915]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:05.917]Killed by external signal\n",
+      ".\n",
+      "Invalid dates (set to INTMAX) in DIDs table: 186\n",
+      "Invalid dates (set to INTMAX) in Replicas table: 476\n"
+     ]
+    }
+   ],
+   "source": [
+    "#intmax timestamps in replicas and dids table\n",
+    "dids_intmax = df_dids.filter(F.col(\"dids_accessed_at\")==INT_MAX).count()\n",
+    "replicas_intmax = df_replicas.filter(F.col(\"max_rep_accessed_at\")==INT_MAX).count()\n",
+    "\n",
+    "print(f\"Invalid dates (set to INTMAX) in DIDs table: {dids_intmax}\")\n",
+    "print(f\"Invalid dates (set to INTMAX) in Replicas table: {replicas_intmax}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 62,
+   "id": "ff79f647",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-12T09:39:09.138498Z",
+     "start_time": "2023-02-12T09:39:09.070242Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "df_accessed_at = df_replicas.join(df_dids, [\"file_name\"], \"inner\")\\\n",
+    "                    .na.fill(0).withColumn(\"accessed_at_comparison\", \n",
+    "                    F.when((F.col(\"dids_accessed_at\")+F.col(\"max_rep_accessed_at\")==0), \"Both None\")\\\n",
+    "                     .when(F.col(\"dids_accessed_at\")<F.col(\"max_rep_accessed_at\"), \"dids_accessed_at SMALLER THAN max_rep_accessed_at\")\\\n",
+    "                     .when(F.col(\"dids_accessed_at\")>F.col(\"max_rep_accessed_at\"), \"dids_accessed_at GREATER THAN max_rep_accessed_at\")\\\n",
+    "                     .otherwise(\"Both Equal\")\n",
+    "                )"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 63,
+   "id": "a42777cb",
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2023-02-12T09:39:53.424366Z",
+     "start_time": "2023-02-12T09:39:09.141770Z"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "23/02/12 10:39:18 WARN YarnSchedulerBackend$YarnSchedulerEndpoint: Requesting driver to remove executor 206 for reason Container from a bad node: container_e159_1675935906795_4399_01_000251 on host: ithdp3108.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:18.484]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:18.533]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:18.535]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:18 ERROR YarnScheduler: Lost executor 206 on ithdp3108.cern.ch: Container from a bad node: container_e159_1675935906795_4399_01_000251 on host: ithdp3108.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:18.484]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:18.533]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:18.535]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:18 WARN TaskSetManager: Lost task 41.0 in stage 88.0 (TID 3064) (ithdp3108.cern.ch executor 206): ExecutorLostFailure (executor 206 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000251 on host: ithdp3108.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:18.484]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:18.533]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:18.535]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:18 WARN TaskSetManager: Lost task 12.0 in stage 88.0 (TID 3050) (ithdp3108.cern.ch executor 206): ExecutorLostFailure (executor 206 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000251 on host: ithdp3108.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:18.484]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:18.533]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:18.535]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:18 WARN TaskSetManager: Lost task 16.0 in stage 89.0 (TID 3094) (ithdp3108.cern.ch executor 206): ExecutorLostFailure (executor 206 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000251 on host: ithdp3108.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:18.484]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:18.533]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:18.535]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:18 WARN TaskSetManager: Lost task 32.0 in stage 89.0 (TID 3102) (ithdp3108.cern.ch executor 206): ExecutorLostFailure (executor 206 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000251 on host: ithdp3108.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:18.484]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:18.533]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:18.535]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:41 WARN YarnSchedulerBackend$YarnSchedulerEndpoint: Requesting driver to remove executor 208 for reason Container from a bad node: container_e159_1675935906795_4399_01_000253 on host: ithdp4013.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:41.373]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:41.427]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:41.432]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:41 ERROR YarnScheduler: Lost executor 208 on ithdp4013.cern.ch: Container from a bad node: container_e159_1675935906795_4399_01_000253 on host: ithdp4013.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:41.373]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:41.427]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:41.432]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:41 WARN TaskSetManager: Lost task 51.0 in stage 92.0 (TID 3253) (ithdp4013.cern.ch executor 208): ExecutorLostFailure (executor 208 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000253 on host: ithdp4013.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:41.373]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:41.427]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:41.432]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:41 WARN TaskSetManager: Lost task 113.0 in stage 92.0 (TID 3315) (ithdp4013.cern.ch executor 208): ExecutorLostFailure (executor 208 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000253 on host: ithdp4013.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:41.373]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:41.427]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:41.432]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:41 WARN TaskSetManager: Lost task 20.0 in stage 92.0 (TID 3222) (ithdp4013.cern.ch executor 208): ExecutorLostFailure (executor 208 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000253 on host: ithdp4013.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:41.373]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:41.427]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:41.432]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:41 WARN TaskSetManager: Lost task 82.0 in stage 92.0 (TID 3284) (ithdp4013.cern.ch executor 208): ExecutorLostFailure (executor 208 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000253 on host: ithdp4013.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:41.373]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:41.427]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:41.432]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:43 WARN YarnSchedulerBackend$YarnSchedulerEndpoint: Requesting driver to remove executor 215 for reason Container from a bad node: container_e159_1675935906795_4399_01_000260 on host: ithdp3101.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:43.337]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:43.383]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:43.387]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:43 ERROR YarnScheduler: Lost executor 215 on ithdp3101.cern.ch: Container from a bad node: container_e159_1675935906795_4399_01_000260 on host: ithdp3101.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:43.337]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:43.383]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:43.387]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:43 WARN TaskSetManager: Lost task 15.0 in stage 92.0 (TID 3217) (ithdp3101.cern.ch executor 215): ExecutorLostFailure (executor 215 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000260 on host: ithdp3101.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:43.337]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:43.383]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:43.387]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:43 WARN TaskSetManager: Lost task 108.0 in stage 92.0 (TID 3310) (ithdp3101.cern.ch executor 215): ExecutorLostFailure (executor 215 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000260 on host: ithdp3101.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:43.337]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:43.383]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:43.387]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:43 WARN TaskSetManager: Lost task 77.0 in stage 92.0 (TID 3279) (ithdp3101.cern.ch executor 215): ExecutorLostFailure (executor 215 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000260 on host: ithdp3101.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:43.337]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:43.383]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:43.387]Killed by external signal\n",
+      ".\n",
+      "23/02/12 10:39:43 WARN TaskSetManager: Lost task 46.0 in stage 92.0 (TID 3248) (ithdp3101.cern.ch executor 215): ExecutorLostFailure (executor 215 exited caused by one of the running tasks) Reason: Container from a bad node: container_e159_1675935906795_4399_01_000260 on host: ithdp3101.cern.ch. Exit status: 137. Diagnostics: [2023-02-12 10:39:43.337]Container killed on request. Exit code is 137\n",
+      "[2023-02-12 10:39:43.383]Container exited with a non-zero exit code 137. \n",
+      "[2023-02-12 10:39:43.387]Killed by external signal\n",
+      ".\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------------------------------------------------+--------+\n",
+      "|accessed_at_comparison                           |count   |\n",
+      "+-------------------------------------------------+--------+\n",
+      "|dids_accessed_at GREATER THAN max_rep_accessed_at|10894086|\n",
+      "|dids_accessed_at SMALLER THAN max_rep_accessed_at|265600  |\n",
+      "|Both Equal                                       |10099428|\n",
+      "|Both None                                        |65412557|\n",
+      "+-------------------------------------------------+--------+\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "df_accessed_at.groupby(\"accessed_at_comparison\").count().show(10, False)"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.9.12"
+  },
+  "sparkconnect": {
+   "bundled_options": [],
+   "list_of_options": [
+    {
+     "name": "spark.jars.packages",
+     "value": "org.apache.spark:spark-avro_2.12:3.2.1"
+    }
+   ]
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
